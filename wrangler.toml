@@ -1,0 +1,4 @@
+# Cloudflare Pages: serve the static app from site/ (no build step).
+name = "cisco-ap-scanner"
+pages_build_output_dir = "site"
+compatibility_date = "2026-10-01"

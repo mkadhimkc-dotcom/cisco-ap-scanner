@@ -1,0 +1,18 @@
+{
+  "switch.jpg": {
+    "type": "Switch",
+    "assetTag": "298366",
+    "mac": "F4:B8:21:88:DE:00",
+    "serial": "FJC302010KM",
+    "pid": "C9300-48UN-A V10",
+    "partNo": "800-107831-05 D0",
+    "clei": "INMGV10CRE"
+  },
+  "ap.jpg": {
+    "type": "AP",
+    "pid": "CW9166I-B V06",
+    "serial": "FJC295016BD",
+    "meraki": "Q5AP-9XMF-374L",
+    "mac": "78:0F:81:0A:68:B0"
+  }
+}

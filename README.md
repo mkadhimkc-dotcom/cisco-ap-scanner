@@ -6,8 +6,8 @@ Everything runs in the browser. Camera frames and photos are never uploaded or s
 ## Put it on GitHub Pages
 
 1. Create a new GitHub repository (for example `label-scanner`).
-2. Upload everything in this folder to the root of the repo: `index.html`, `app.js`, `core.js`, `.nojekyll`, `README.md` and the `vendor/` folder.
-3. In the repo, open **Settings > Pages**. Under **Build and deployment**, choose **Deploy from a branch**, branch `main`, folder `/ (root)`. Save.
+2. Push this repository to it.
+3. In the repo, open **Settings > Pages**. Under **Build and deployment**, choose **GitHub Actions**. The CI workflow tests every push and publishes the `site/` folder from `main`.
 4. After a minute the site is live at `https://<your-username>.github.io/label-scanner/`.
 5. Open that address in Safari on the iPhone. Tap **Share > Add to Home Screen** to get an app icon.
 
@@ -36,8 +36,21 @@ The asset tag pattern defaults to 4 to 9 digits and can be changed under **Setti
 
 ## Files
 
-- `index.html`: layout and styles
-- `app.js`: scan files, camera, photo handling, device list, export
-- `xlsx.js`: small Excel (.xlsx) writer, no dependencies
-- `core.js`: image processing (barcode region finder, deskew), label field classification, CSV
-- `vendor/`: [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) 2.2.4 barcode decoder (MIT, see license file)
+- `site/`: the app (this folder is what gets published)
+  - `index.html`, `app.js`: layout and UI
+  - `src/`: ES modules: `image.js`, `regions.js` (barcode region finder), `deskew.js`, `scan.js` (photo pipeline), `classify.js` (field rules, device type), `device.js` (build/merge), `csv.js`, `xlsx.js`, `decoder.js`
+  - `vendor/zxing-wasm/`: [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) **2.2.4** reader, ES module build (MIT, see `vendor/LICENSE-zxing-wasm.txt`). wasm SHA-256 `85d46f55d7c86a4d09bb04273367408b19c324f582d040d018aecb25a9a82942`. Refresh with `node scripts/vendor.mjs` after changing the pinned version in `package.json`.
+  - `fonts/`: IBM Plex Sans/Mono, Latin subset, self-hosted (SIL OFL 1.1)
+- `test/`: unit tests, golden-image tests (`test/fixtures/*.jpg`, ground truth in `expected.json`), Playwright browser tests
+- `scripts/`: fixture generators, static dev server, vendoring
+
+## Development
+
+```bash
+npm ci
+npm test            # unit + golden-image tests (Node, real zxing-wasm decoder)
+npm run test:e2e    # Playwright, Chromium with a fake camera
+npm run serve       # http://localhost:8765
+```
+
+The fixture photos in `test/fixtures/` are synthetic stand-ins rendered by `npm run fixtures` (real barcode symbols on a mock label, then tilt, blur, noise and JPEG). Replace them with real phone photos of the same labels to test against real-world images; `expected.json` stays the same.

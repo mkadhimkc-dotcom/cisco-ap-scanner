@@ -1,8 +1,16 @@
 /* Label Scanner app: scan files, live camera scan, photo scan, device list, CSV/Excel export. */
+import { scanImage } from './src/scan.js';
+import { classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_LABEL, TYPES, EXPECTED, DEFAULT_ASSET_RE } from './src/classify.js';
+import { buildDevice, mergeDevice } from './src/device.js';
+import { csvCell } from './src/csv.js';
+import { createDecoder } from './src/decoder.js';
+import { Xlsx } from './src/xlsx.js';
+
+const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_LABEL, TYPES, EXPECTED, DEFAULT_ASSET_RE, buildDevice, mergeDevice, csvCell };
+
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
-  var Core = window.Core;
   var LABEL = Object.assign({ note: 'Note' }, Core.FIELD_LABEL);
   var STORE = 'labelscanner.v3';
 
@@ -113,22 +121,9 @@
   function touch(f) { f.updated = stamp(new Date()); }
 
   /* ---------- decoder ---------- */
-  var ZOPTS = { formats: ['Code128', 'Code39', 'DataMatrix', 'QRCode'], tryHarder: true, tryRotate: true, tryInvert: true, tryDownscale: true, maxNumberOfSymbols: 20 };
   async function initDecoder() {
     try {
-      var Z = window.ZXingWASM;
-      if (!Z) throw new Error('decoder script missing');
-      Z.setZXingModuleOverrides({
-        locateFile: function (p, prefix) { return /\.wasm$/.test(p) ? new URL('vendor/zxing_reader.wasm', document.baseURI).href : prefix + p; }
-      });
-      await Z.readBarcodes({ data: new Uint8ClampedArray(16 * 16 * 4).fill(255), width: 16, height: 16 }, ZOPTS);
-      decodeFn = async function (img) {
-        var res = await Z.readBarcodes(img, ZOPTS);
-        return res.filter(function (r) { return r.isValid !== false; }).map(function (r) {
-          var p = r.position;
-          return { format: r.format, text: r.text, pos: p ? [p.topLeft, p.topRight, p.bottomRight, p.bottomLeft] : null };
-        });
-      };
+      decodeFn = await createDecoder({ wasmUrl: new URL('vendor/zxing-wasm/reader/zxing_reader.wasm', document.baseURI).href });
       setPill('Ready', 'ok');
     } catch (e) {
       decodeFn = null;
