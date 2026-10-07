@@ -167,7 +167,10 @@
   }
 
   /* ---------- live camera ---------- */
-  var live = { stream: null, track: null, running: false, codes: new Map(), target: null, frames: 0, canvas: null };
+  /* justSaved: identifying values (asset tag, MAC, serials) of the device just saved. Codes carrying them are
+     ignored until the next save, so the label still in front of the camera is not read again as a duplicate
+     of itself and does not leak into the next device. Shared codes such as the model are still read. */
+  var live = { stream: null, track: null, running: false, codes: new Map(), target: null, frames: 0, canvas: null, justSaved: null };
 
   async function startLive(tid) {
     var f = cur();
@@ -176,7 +179,7 @@
       setStatus('This browser cannot open the camera here. Open the app from its https:// address in Safari, or use Take photo.', 'bad');
       return;
     }
-    live.target = tid || null; live.codes = new Map(); live.frames = 0;
+    live.target = tid || null; live.codes = new Map(); live.frames = 0; live.justSaved = null;
     $('liveTitle').textContent = live.target ? 'Adding to device #' + num(f, findRow(f, live.target)) : 'Live scan';
     $('scanPanel').hidden = true; $('livePanel').hidden = false; $('bottomBar').hidden = true;
     $('liveMsg').textContent = 'Starting camera…'; setStatus('');
@@ -231,15 +234,22 @@
       try { list = await Core.scanImage({ data: img.data, width: cw, height: ch }, decodeFn, { noTiles: true }); } catch (e) {}
       if (!live.running) break;
       live.frames++;
-      var fresh = false;
+      var fresh = false, js = live.justSaved;
       list.forEach(function (c) {
         var key = c.format + '|' + c.text, h = live.codes.get(key);
+        if (js && isJustSaved(c, js)) return;
         if (h) h.count += c.count; else { live.codes.set(key, { format: c.format, text: c.text, count: c.count }); fresh = true; }
       });
       if (fresh) flash();
       renderLive();
       await sleep(50);
     }
+  }
+
+  function isJustSaved(c, js) {
+    var hits = [];
+    try { hits = Core.classify(c, { assetRe: state.assetRe }); } catch (e) {}
+    return hits.some(function (h) { return DUP_FIELDS.indexOf(h.field) >= 0 && js.vals.has(dupKey(h.field, h.value)); });
   }
 
   function flash() {
@@ -272,10 +282,12 @@
     $('liveMsg').classList.toggle('dup', ldups.length > 0 && live.running);
     $('liveMsg').textContent = !live.running ? 'Starting camera…' :
       ldups.length ? 'Duplicate: this device looks already scanned (' + ldups[0].where.join(', ') + '). Check before saving.' :
+      live.justSaved && !DUP_FIELDS.some(function (k) { return dev[k]; }) ? 'Saved as #' + live.justSaved.n + '. Point at the next device.' :
       !live.codes.size ? (live.frames > 6 ? 'No barcodes yet. Move closer and hold steady.' : 'Looking for barcodes…') :
       missing ? 'Reading… ' + plural(missing, 'field') + ' to go. Move slowly along the label.' : 'All expected fields read. Tap Save device.';
-    $('btnSaveDev').disabled = !got;
-    $('btnSaveDev').textContent = got ? 'Save (' + got + ')' : 'Save device';
+    var waiting = live.justSaved && !DUP_FIELDS.some(function (k) { return dev[k]; });
+    $('btnSaveDev').disabled = !got || waiting;
+    $('btnSaveDev').textContent = got && !waiting ? 'Save (' + got + ')' : 'Save device';
   }
 
   function saveLiveDevice() {
@@ -289,6 +301,10 @@
       if (d.length) setStatus('Saved, but this is a duplicate: ' + dupText(d) + '.', 'bad');
       else setStatus('Saved. ' + s.text + (tid ? '' : ' Point at the next device.'), s.kind);
     }
+    live.justSaved = row && !tid ? {
+      n: num(f, row),
+      vals: new Set(DUP_FIELDS.map(function (k) { return dupKey(k, row[k]); }).filter(Boolean))
+    } : null;
     live.codes = new Map(); live.frames = 0;
     if (tid) stopLive(); else renderLive();
   }
@@ -639,7 +655,7 @@
     var el = document.getElementById('f-' + row.id + '-assetTag'); if (el) el.focus();
   });
   $('btnSaveDev').addEventListener('click', saveLiveDevice);
-  $('btnResetDev').addEventListener('click', function () { live.codes = new Map(); live.frames = 0; renderLive(); });
+  $('btnResetDev').addEventListener('click', function () { live.codes = new Map(); live.frames = 0; live.justSaved = null; renderLive(); });
   $('btnStop').addEventListener('click', stopLive);
   $('btnTorch').addEventListener('click', function () {
     var on = !this.dataset.on; this.dataset.on = on ? '1' : '';
