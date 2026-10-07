@@ -20,6 +20,7 @@
     "@playwright/test": "1.56.1",
     "bwip-js": "4.11.4",
     "jpeg-js": "0.4.4",
+    "oui-data": "2.1.35",
     "zxing-wasm": "2.2.4"
   }
 }

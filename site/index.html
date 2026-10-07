@@ -224,6 +224,20 @@ dialog.sheet::backdrop { background: rgba(17, 24, 39, 0.35); }
 .dupbox { margin: 0; padding: 8px 12px; border-radius: 10px; background: var(--bad-soft); color: var(--bad); font-size: 13px; display: grid; gap: 2px; }
 .field.dupfield input { border-color: var(--bad); background: var(--bad-soft); }
 .field.dupfield label span:first-child::after { content: " \00b7 duplicate"; color: var(--bad); font-weight: 600; }
+.conf { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-3); }
+.conf i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block; }
+.conf.confirmed { color: var(--ok); } .conf.single { color: var(--warn); } .conf.manual { color: var(--accent); }
+.fmsgs { display: grid; gap: 2px; }
+.fmsgs:empty { display: none; }
+.fmsg { font-size: 12px; } .fmsg.ok { color: var(--ink-2); } .fmsg.warn { color: var(--warn); } .fmsg.error { color: var(--bad); font-weight: 600; }
+.mismatch { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--bad); color: #fff; font-size: 14px; }
+.toast { position: fixed; z-index: 30; left: 50%; transform: translateX(-50%); bottom: calc(84px + env(safe-area-inset-bottom, 0px)); width: min(560px, calc(100% - 32px)); display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 16px; border-radius: 12px; background: #111827; color: #fff; box-shadow: var(--shadow-lg); font-size: 14px; }
+.toast span { flex: 1; }
+.toast .btn { min-height: 44px; background: transparent; color: #93c5fd; border-color: #374151; box-shadow: none; }
+.askbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.askbtns.list { grid-template-columns: 1fr; max-height: 50vh; overflow-y: auto; }
+.askbtns .listbtn { justify-content: flex-start; text-align: left; font-family: var(--font-data); font-size: 14px; }
+.live.asset-mode .found li { font-size: 15px; }
 .note-ok { color: var(--ok); font-size: 13px; margin: 0; }
 .warns { margin: 0; padding: 8px 12px; list-style: none; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 13px; display: grid; gap: 4px; }
 details > summary { cursor: pointer; font-size: 13px; color: var(--ink-2); min-height: 32px; display: flex; align-items: center; }
@@ -414,6 +428,7 @@ table.prev tr.dup td { background: var(--bad-soft); }
         <div class="bad"><b id="exDup">0</b><span>Duplicates</span></div>
       </div>
       <p class="callout bad" id="exDupCallout" hidden></p>
+      <p class="callout" id="exOnceCallout" hidden></p>
       <p class="callout" id="exCallout" hidden></p>
 
       <div class="group">
@@ -484,6 +499,17 @@ table.prev tr.dup td { background: var(--bad-soft); }
     </button>
   </div>
 </div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden><span></span><button type="button" class="btn small" id="btnUndo">Undo</button></div>
+
+<dialog class="sheet" id="dlgAsk" aria-labelledby="askTitle">
+  <form method="dialog">
+    <div class="grab"></div>
+    <h2 id="askTitle"></h2>
+    <p class="hint" id="askText"></p>
+    <div class="askbtns" id="askBtns"></div>
+  </form>
+</dialog>
 
 <dialog class="sheet" id="dlgNew" aria-labelledby="newTitle">
   <form method="dialog" id="newForm">

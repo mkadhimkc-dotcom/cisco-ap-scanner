@@ -1,7 +1,8 @@
 /* Label Scanner app: scan files, live camera scan, photo scan, device list, CSV/Excel export. */
 import { scanImage } from './src/scan.js';
 import { classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_LABEL, TYPES, EXPECTED, DEFAULT_ASSET_RE } from './src/classify.js';
-import { buildDevice, mergeDevice } from './src/device.js';
+import { buildDevice, mergeDevice, mergeRows, CONF } from './src/device.js';
+import { macIssues, serialIssues, serialNote, splitPid, ouiSets, ouiVendor } from './src/validate.js';
 import { csvCell } from './src/csv.js';
 import { Scanner } from './src/scanner.js';
 import * as Cam from './src/camera.js';
@@ -12,7 +13,8 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
-  var LABEL = Object.assign({ note: 'Note' }, Core.FIELD_LABEL);
+  var LABEL = Object.assign({ note: 'Note', hwRev: 'Hardware rev' }, Core.FIELD_LABEL);
+  var oui = null;   // Cisco/Meraki OUI prefixes, loaded at start (data/oui-cisco.json)
   var STORE = 'labelscanner.v3';
 
   var KIND = {
@@ -143,20 +145,40 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     return {
       id: 'd' + Date.now().toString(36) + f.seq, type: dev.type || 'Other',
       assetTag: dev.assetTag || '', mac: dev.mac || '', serial: dev.serial || '', meraki: dev.meraki || '', pid: dev.pid || '', partNo: dev.partNo || '', clei: dev.clei || '',
-      note: '', scannedAt: stamp(new Date()), warnings: dev.warnings || [], other: dev.other || [], serialAgrees: !!dev.serialAgrees,
-      scanned: {}, edited: {}
+      hwRev: dev.hwRev || '', note: '', scannedAt: stamp(new Date()), warnings: dev.warnings || [], other: dev.other || [],
+      serialAgrees: !!dev.serialAgrees, serialMismatch: dev.serialMismatch || null, conf: Object.assign({}, dev.conf || {})
     };
   }
-  /* codes -> new device in file f, or merged into the device with id tid. Returns the row or null. */
-  function ingest(f, codes, tid) {
+  /* A saved device in file f with the same serial, Meraki serial or MAC as dev (not counting `except`). */
+  function findMatch(f, dev, except) {
+    return f.rows.find(function (r) {
+      return r !== except && ['serial', 'meraki', 'mac'].some(function (k) { var a = dupKey(k, dev[k]); return a && a === dupKey(k, r[k]); });
+    }) || null;
+  }
+  /* New scan that matches a saved device: ask whether to open (merge into) it or add a second device.
+     Resolves to the row id to merge into, null for a new device, or false to drop the scan. */
+  async function resolveRepeat(f, dev) {
+    var m = findMatch(f, dev); if (!m) return null;
+    var same = ['serial', 'meraki', 'mac'].filter(function (k) { var a = dupKey(k, dev[k]); return a && a === dupKey(k, m[k]); })
+      .map(function (k) { return LABEL[k] + ' ' + (k === 'mac' ? Core.formatMac(m[k], 'colons') : m[k]); });
+    var choice = await ask({
+      title: 'Already in this file as #' + num(f, m),
+      text: 'Same ' + same.join(' and ') + '. Open the existing device and add anything new to it, or add this as a separate device?',
+      buttons: [{ label: 'Add as new', value: 'new' }, { label: 'Open existing', value: 'open', primary: true }]
+    });
+    return choice === 'open' ? m.id : choice === 'new' ? null : false;
+  }
+  /* codes -> new device in file f, or merged into the device with id tid. A scan that repeats a saved
+     device asks first (Open existing / Add as new). Returns the row, or null when nothing was kept. */
+  async function ingest(f, codes, tid) {
     var dev = Core.buildDevice(codes, { assetRe: state.assetRe });
     var got = Core.FIELD_ORDER.filter(function (k) { return dev[k]; }).length;
     if (!got && !dev.other.length) return null;
     if (f.kind !== 'Mixed') dev.type = f.kind;
+    if (!tid) { var r = await resolveRepeat(f, dev); if (r === false) return null; tid = r; }
     var row = tid && findRow(f, tid);
     if (row) Core.mergeDevice(row, dev);
     else { row = newRow(f, dev); f.rows.push(row); }
-    Core.FIELD_ORDER.forEach(function (k) { if (dev[k] && row[k] === dev[k]) row.scanned[k] = true; });
     touch(f);
     return row;
   }
@@ -173,16 +195,19 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   var live = { stream: null, track: null, caps: {}, running: false, codes: new Map(), target: null, frames: 0, justSaved: null,
     boxes: [], reading: false, steady: true, focusNoted: false };
 
-  async function startLive(tid) {
+  /* mode 'asset': single-code mode for the County asset-tag sticker; returns to the file once it is read twice */
+  async function startLive(tid, mode) {
     var f = cur();
     if (!f || live.running || !scanner) return;
+    live.mode = mode || 'device';
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setStatus('This browser cannot open the camera here. Open the app from its https:// address in Safari, or use Take photo.', 'bad');
       return;
     }
     live.target = tid || null; live.codes = new Map(); live.frames = 0; live.justSaved = null; live.boxes = []; live.steady = true;
     scanner.reset();
-    $('liveTitle').textContent = live.target ? 'Adding to device #' + num(f, findRow(f, live.target)) : 'Live scan';
+    $('liveTitle').textContent = live.mode === 'asset' ? 'Asset tag for #' + num(f, findRow(f, live.target)) : live.target ? 'Adding to device #' + num(f, findRow(f, live.target)) : 'Live scan';
+    $('livePanel').classList.toggle('asset-mode', live.mode === 'asset');
     $('scanPanel').hidden = true; $('livePanel').hidden = false; $('bottomBar').hidden = true;
     $('liveMsg').textContent = 'Starting camera…'; setStatus('');
     renderLive();
@@ -259,6 +284,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   /* One read per code per frame (or per still), so a field's vote count is the number of frames that read it. */
   function addLiveCodes(list) {
     var fresh = false, js = live.justSaved;
+    if (live.mode === 'asset') list = list.filter(function (c) { return classifyCode(c).some(function (h) { return h.field === 'assetTag'; }); });
     if (js) {
       var cls = list.map(function (c) { return { c: c, hits: classifyCode(c) }; });
       if (!js.started) js.started = cls.some(function (x) { return x.hits.some(function (h) { return DUP_FIELDS.indexOf(h.field) >= 0 && !js.vals.has(dupKey(h.field, h.value)); }); });
@@ -273,6 +299,17 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       if (h) h.count += 1; else { live.codes.set(key, { format: c.format, text: c.text, count: 1 }); fresh = true; }
     });
     if (fresh) flash();
+    if (live.mode === 'asset') finishAssetTag();
+  }
+  function finishAssetTag() {
+    var f = cur(), row = f && findRow(f, live.target), dev = liveDevice();
+    if (!row || !dev.assetTag || (dev.votes.assetTag || 0) < 2) return;
+    row.assetTag = dev.assetTag; row.conf = row.conf || {}; row.conf.assetTag = CONF.confirmed;
+    touch(f); save();
+    var n = num(f, row);
+    stopLive(); renderFile();
+    setStatus('Asset tag ' + row.assetTag + ' added to #' + n + '.');
+    try { if (navigator.vibrate) navigator.vibrate([30, 60, 30]); } catch (e) {}
   }
 
   function setReading(on) {
@@ -340,8 +377,8 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     var dev = liveDevice();
     var row = live.target && findRow(f, live.target);
     var type = f.kind !== 'Mixed' ? f.kind : (row && row.type !== 'Other' ? row.type : dev.type);
-    var exp = expectedFor(type);
-    var shown = exp.concat(Core.FIELD_ORDER.filter(function (k) { return exp.indexOf(k) < 0 && dev[k]; }));
+    var exp = live.mode === 'asset' ? ['assetTag'] : expectedFor(type);
+    var shown = live.mode === 'asset' ? exp : exp.concat(Core.FIELD_ORDER.filter(function (k) { return exp.indexOf(k) < 0 && dev[k]; }));
     var got = Core.FIELD_ORDER.filter(function (k) { return dev[k]; }).length;
     $('liveType').textContent = got || f.kind !== 'Mixed' ? type : 'Looking…';
     $('liveType').className = 'badge ' + (type === 'Switch' ? 'Switch' : type === 'AP' ? 'AP' : 'Mixed');
@@ -358,21 +395,22 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     var missing = exp.filter(function (k) { return !dev[k] && !(row && row[k]); }).length;
     $('liveMsg').classList.toggle('dup', ldups.length > 0 && live.running);
     $('liveMsg').textContent = !live.running ? 'Starting camera…' :
+      live.mode === 'asset' ? (dev.assetTag ? 'Read ' + dev.assetTag + ' once. Hold steady to confirm…' : 'Point at the County asset tag sticker.') :
       ldups.length ? 'Duplicate: this device looks already scanned (' + ldups[0].where.join(', ') + '). Check before saving.' :
       live.justSaved && !live.justSaved.started ? 'Saved as #' + live.justSaved.n + '. Point at the next device.' :
       !live.steady ? 'Hold steady…' :
       !live.codes.size ? (live.frames > 6 ? 'No barcodes yet. Move closer and hold steady.' : 'Looking for barcodes…') :
       missing ? 'Reading… ' + plural(missing, 'field') + ' to go. Move slowly along the label.' : 'All expected fields read. Tap Save device.';
-    var waiting = live.justSaved && !live.justSaved.started;
+    var waiting = (live.justSaved && !live.justSaved.started) || live.mode === 'asset';
     $('btnSaveDev').disabled = !got || waiting;
     $('btnSaveDev').textContent = got && !waiting ? 'Save (' + got + ')' : 'Save device';
   }
 
-  function saveLiveDevice() {
+  async function saveLiveDevice() {
     var f = cur(), codes = Array.from(live.codes.values());
     if (!f || !codes.length) return;
     var tid = live.target;
-    var row = ingest(f, codes, tid);
+    var row = await ingest(f, codes, tid);
     save(); renderFile();
     if (row) {
       var s = summary(f, row), d = dupsOf(f, row);
@@ -447,7 +485,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       try {
         showProgress(label + ': opening…', 0); await nextFrame();
         var codes = await photoCodes(files[i], function (d, t, n) { showProgress(label + ': reading · ' + plural(n, 'code') + ' found', d / t); });
-        var row = ingest(f, codes, tid);
+        var row = await ingest(f, codes, tid);
         if (!row) { empty++; continue; }
         if (!tid) added++;
         lastRow = row;
@@ -517,17 +555,37 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   }
 
   /* ---------- rendering: file ---------- */
+  var CONF_TEXT = { confirmed: 'confirmed', single: 'read once', manual: 'typed' };
+  function confDot(row, k) {
+    var c = row.conf && row.conf[k];
+    if (!c || !row[k]) return '';
+    return '<span class="conf ' + c + '" title="' + CONF_TEXT[c] + '"><i aria-hidden="true"></i>' + CONF_TEXT[c] + '</span>';
+  }
+  /* Validation lines under a field: problems (warn/error) and the serial date-code sanity note. */
+  function fieldMsgs(row, k) {
+    var issues = k === 'mac' ? macIssues(row.mac, oui) : k === 'serial' ? serialIssues(row.serial) : [];
+    var h = issues.map(function (i) { return '<span class="fmsg ' + i.level + '">' + esc(i.text) + '</span>'; }).join('');
+    if (k === 'serial' && !issues.length && serialNote(row.serial)) h += '<span class="fmsg ok">' + esc(serialNote(row.serial)) + '</span>';
+    if (k === 'mac' && !issues.length && ouiVendor(row.mac, oui)) h += '<span class="fmsg ok">' + ouiVendor(row.mac, oui) + ' OUI</span>';
+    return h;
+  }
   function fieldHtml(row, k) {
     var id = 'f-' + row.id + '-' + k;
-    var src = row.edited && row.edited[k] ? '<span class="src">typed</span>' : (row.scanned && row.scanned[k] ? '<span class="src scan">scanned</span>' : '');
-    var miss = !row[k] && k !== 'note';
-    return '<div class="field' + (miss ? ' missing' : '') + (k === 'note' ? ' note' : '') + '"><label for="' + id + '"><span>' + esc(LABEL[k]) + '</span>' + src + '</label>' +
+    var miss = !row[k] && k !== 'note' && k !== 'hwRev';
+    return '<div class="field' + (miss ? ' missing' : '') + (k === 'note' ? ' note' : '') + '"><label for="' + id + '"><span>' + esc(LABEL[k]) + '</span>' + confDot(row, k) + '</label>' +
       '<input id="' + id + '" data-row="' + row.id + '" data-field="' + k + '" value="' + esc(row[k]) + '" placeholder="' + (k === 'note' ? 'Closet, rack, room, anything' : 'Not read') + '"' +
-      (k === 'note' ? ' autocapitalize="sentences" style="font-family:var(--font-ui)"' : ' autocapitalize="characters"') + ' autocomplete="off" autocorrect="off" spellcheck="false"></div>';
+      (k === 'note' ? ' autocapitalize="sentences" style="font-family:var(--font-ui)"' : ' autocapitalize="characters"') + ' autocomplete="off" autocorrect="off" spellcheck="false">' +
+      '<div class="fmsgs" id="m-' + row.id + '-' + k + '" aria-live="polite">' + fieldMsgs(row, k) + '</div></div>';
+  }
+  function cardFields(row) {
+    var exp = expectedFor(row.type).slice();
+    var i = exp.indexOf('pid'); if (i >= 0) exp.splice(i + 1, 0, 'hwRev');
+    var extra = Core.FIELD_ORDER.filter(function (k) { return exp.indexOf(k) < 0; });
+    if (exp.indexOf('hwRev') < 0) extra.push('hwRev');
+    return { main: exp.concat(['note']), extra: extra };
   }
   function cardHtml(f, row) {
-    var exp = expectedFor(row.type), miss = missingOf(row);
-    var extra = Core.FIELD_ORDER.filter(function (k) { return exp.indexOf(k) < 0; });
+    var miss = missingOf(row), fl = cardFields(row);
     var h = '<li class="card" data-row="' + row.id + '"><header><span class="num">' + num(f, row) + '</span>' +
       '<span class="ttl"><span class="model' + (row.pid ? '' : ' none') + '">' + esc(row.pid || 'Model not read') + '</span><span class="when">' + esc(row.type === 'Other' ? 'Device' : row.type) + ' · ' + esc(niceDate(row.scannedAt)) + '</span></span>' +
       (f.kind === 'Mixed' ? '<select class="typesel" data-row="' + row.id + '" data-field="type" aria-label="Device type">' +
@@ -535,12 +593,18 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       '<span class="state dupchip" hidden>Duplicate</span>' +
       '<span class="state fill ' + (miss.length ? 'warn' : 'ok') + '">' + (miss.length ? miss.length + ' missing' : 'Complete') + '</span></header>' +
       '<div class="dupbox" hidden></div>';
-    h += '<div class="fields">' + exp.concat(['note']).map(function (k) { return fieldHtml(row, k); }).join('') + '</div>';
-    if (extra.length) h += '<details><summary>More fields (' + extra.length + ')</summary><div class="fields" style="margin-top:8px">' + extra.map(function (k) { return fieldHtml(row, k); }).join('') + '</div></details>';
-    if (row.serialAgrees) h += '<p class="note-ok">Serial read the same from two labels.</p>';
+    if (row.serialMismatch) h += '<p class="mismatch" role="alert"><b>Serial mismatch.</b> The barcode label says ' + esc(row.serialMismatch.label) + ' but the Data Matrix says ' + esc(row.serialMismatch.matrix) + '. Check the device before exporting.</p>';
+    h += '<div class="fields">' + fl.main.map(function (k) { return fieldHtml(row, k); }).join('') + '</div>';
+    h += '<details><summary>More fields (' + fl.extra.length + ')</summary><div class="fields" style="margin-top:8px">' + fl.extra.map(function (k) { return fieldHtml(row, k); }).join('') + '</div></details>';
+    if (row.serialAgrees) h += '<p class="note-ok">Serial read the same from the barcode and the Data Matrix.</p>';
     if (row.warnings && row.warnings.length) h += '<ul class="warns">' + row.warnings.map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') + '</ul>';
     if (row.other && row.other.length) h += '<details class="others"><summary>' + plural(row.other.length, 'other code') + ' not matched to a field</summary><ul>' + row.other.map(function (o) { return '<li>' + esc(o.format) + ': ' + esc(o.text) + '</li>'; }).join('') + '</ul></details>';
-    h += '<div class="actions"><button type="button" class="btn small" data-act="live" data-id="' + row.id + '">Scan more</button><button type="button" class="btn small" data-act="photo" data-id="' + row.id + '">Add photo</button><span class="grow"></span><button type="button" class="btn small danger" data-act="del" data-id="' + row.id + '">Delete</button></div></li>';
+    h += '<div class="actions">' +
+      '<button type="button" class="btn small" data-act="live" data-id="' + row.id + '">Scan more</button>' +
+      '<button type="button" class="btn small" data-act="asset" data-id="' + row.id + '">Scan asset tag</button>' +
+      '<button type="button" class="btn small" data-act="photo" data-id="' + row.id + '">Add photo</button>' +
+      (f.rows.length > 1 ? '<button type="button" class="btn small" data-act="merge" data-id="' + row.id + '">Merge into…</button>' : '') +
+      '<span class="grow"></span><button type="button" class="btn small danger" data-act="del" data-id="' + row.id + '">Delete</button></div></li>';
     return h;
   }
   function refreshDups(f) {
@@ -640,6 +704,11 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     $('exDupCallout').textContent = dupList.length ? plural(dupList.length, 'device') + ' look like duplicates: ' +
       dupList.slice(0, 4).map(function (r) { return '#' + num(f, r) + ' (' + dupText(dupsOf(f, r)) + ')'; }).join('; ') + (dupList.length > 4 ? '; and ' + (dupList.length - 4) + ' more' : '') +
       '. They are highlighted in the preview and in the Excel file.' : '';
+    var once = [];
+    f.rows.forEach(function (r) { Object.keys(r.conf || {}).forEach(function (k) { if (r.conf[k] === CONF.single && r[k]) once.push('#' + num(f, r) + ' ' + LABEL[k]); }); });
+    $('exOnceCallout').hidden = !once.length;
+    $('exOnceCallout').textContent = once.length ? plural(once.length, 'value') + (once.length === 1 ? ' was' : ' were') + ' read only once (amber dot): ' + once.slice(0, 6).join(', ') +
+      (once.length > 6 ? ' and ' + (once.length - 6) + ' more' : '') + '. Check them against the label, or scan again to confirm.' : '';
     var bad = f.rows.filter(function (r) { return missingOf(r).length; });
     var co = $('exCallout');
     co.hidden = !c.total;
@@ -810,7 +879,12 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     var f = cur(), row = findRow(f, t.dataset.row); if (!row) return;
     var k = t.dataset.field;
     row[k] = k === 'note' ? t.value : t.value.trim();
-    row.edited = row.edited || {}; row.edited[k] = true;
+    row.conf = row.conf || {};
+    if (k !== 'note') row.conf[k] = CONF.manual;
+    if (k === 'pid' && row.conf.hwRev !== CONF.manual) {
+      row.hwRev = splitPid(row.pid).rev; row.conf.hwRev = CONF.manual;
+      var hw = document.getElementById('f-' + row.id + '-hwRev'); if (hw) hw.value = row.hwRev;
+    }
     touch(f); save(); renderStats(f);
   });
   $('devices').addEventListener('change', function (e) {
@@ -818,6 +892,11 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     var f = cur(), row = findRow(f, t.dataset.row); if (!row) return;
     if (t.dataset.field === 'type') { row.type = t.value; save(); renderFile(); return; }
     if (t.dataset.field === 'mac') { var n = Core.normalizeMac(t.value); if (n) { row.mac = n; t.value = n; save(); } }
+    var msgs = document.getElementById('m-' + row.id + '-' + t.dataset.field);
+    if (msgs) msgs.innerHTML = fieldMsgs(row, t.dataset.field);
+    var lbl = t.closest('.field').querySelector('label');
+    var old = lbl.querySelector('.conf'); if (old) old.remove();
+    lbl.insertAdjacentHTML('beforeend', confDot(row, t.dataset.field));
     if (DUP_FIELDS.indexOf(t.dataset.field) >= 0) { refreshDups(f); renderStats(f); }
     if (t.dataset.field !== 'note') {
       var card = t.closest('.card'), miss = missingOf(row), chip = card && card.querySelector('.state.fill');
@@ -829,9 +908,64 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     var b = e.target.closest('button[data-act]'); if (!b) return;
     var f = cur(), id = b.dataset.id;
     if (b.dataset.act === 'live') startLive(id);
+    if (b.dataset.act === 'asset') startLive(id, 'asset');
     if (b.dataset.act === 'photo') { targetId = id; $('inCam').click(); }
-    if (b.dataset.act === 'del') twoStep(b, 'del' + id, 'Delete', function () { f.rows = f.rows.filter(function (r) { return r.id !== id; }); touch(f); save(); renderFile(); });
+    if (b.dataset.act === 'del') deleteDevice(f, id);
+    if (b.dataset.act === 'merge') mergeInto(f, id);
   });
+
+  /* ---------- delete with undo, merge ---------- */
+  var undo = null;
+  function offerUndo(text, restore) {
+    if (undo) clearTimeout(undo.t);
+    var t = $('toast');
+    t.querySelector('span').textContent = text;
+    t.hidden = false;
+    undo = { restore: restore, t: setTimeout(clearUndo, 5000) };
+  }
+  function clearUndo() { if (undo) clearTimeout(undo.t); undo = null; $('toast').hidden = true; }
+  $('btnUndo').addEventListener('click', function () {
+    if (!undo) return;
+    var r = undo.restore; clearUndo(); r();
+  });
+  /* Snapshot a file's devices so one tap can put them back exactly as they were. */
+  function snapshot(f) { var rows = JSON.parse(JSON.stringify(f.rows)); return function () { f.rows = rows; touch(f); save(); if (cur() === f) renderFile(); setStatus('Restored.'); }; }
+  function deleteDevice(f, id) {
+    var row = findRow(f, id); if (!row) return;
+    var n = num(f, row), restore = snapshot(f);
+    f.rows = f.rows.filter(function (r) { return r.id !== id; }); touch(f); save(); renderFile();
+    offerUndo('Deleted device #' + n + '.', restore);
+  }
+  async function mergeInto(f, id) {
+    var src = findRow(f, id); if (!src) return;
+    var others = f.rows.filter(function (r) { return r !== src; });
+    var choice = await ask({
+      title: 'Merge #' + num(f, src) + ' into…',
+      text: 'Pick the device to keep. Empty fields on it are filled from #' + num(f, src) + ', then #' + num(f, src) + ' is removed. You can undo for 5 seconds.',
+      buttons: others.map(function (r) { return { label: '#' + num(f, r) + ' · ' + (r.pid || r.type) + (r.serial ? ' · ' + r.serial : r.mac ? ' · ' + Core.formatMac(r.mac, 'colons') : ''), value: r.id, list: true }; })
+        .concat([{ label: 'Cancel', value: '' }])
+    });
+    var dst = choice && findRow(f, choice); if (!dst) return;
+    var restore = snapshot(f), from = num(f, src);
+    mergeRows(dst, src);
+    f.rows = f.rows.filter(function (r) { return r !== src; }); touch(f); save(); renderFile();
+    offerUndo('Merged #' + from + ' into #' + num(f, dst) + '.', restore);
+  }
+
+  /* ---------- ask: small modal sheet that resolves to the chosen button's value ('' when dismissed) ---------- */
+  function ask(o) {
+    var d = $('dlgAsk');
+    $('askTitle').textContent = o.title; $('askText').textContent = o.text || '';
+    $('askBtns').innerHTML = o.buttons.map(function (b) {
+      return '<button type="submit" class="btn' + (b.primary ? ' primary' : '') + (b.list ? ' listbtn' : '') + '" value="' + esc(b.value) + '">' + esc(b.label) + '</button>';
+    }).join('');
+    $('askBtns').classList.toggle('list', o.buttons.some(function (b) { return b.list; }));
+    return new Promise(function (resolve) {
+      d.returnValue = '';
+      d.addEventListener('close', function done() { d.removeEventListener('close', done); resolve(d.returnValue || ''); });
+      if (d.showModal) d.showModal(); else d.setAttribute('open', '');
+    });
+  }
 
   function deleteFile(id) {
     var f = state.files.find(function (x) { return x.id === id; }); if (!f) return;
@@ -855,6 +989,9 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   window.addEventListener('hashchange', onRoute);
 
   /* ---------- boot ---------- */
+  fetch('data/oui-cisco.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+    oui = ouiSets(j); if (route.view === 'file') renderFile();
+  }).catch(function () { oui = null; });
   load();
   $('assetRe').value = state.assetRe;
   onRoute();
