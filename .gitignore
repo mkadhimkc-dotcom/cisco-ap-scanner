@@ -1,0 +1,5 @@
+node_modules/
+test-results/
+playwright-report/
+test/fixtures/.build/
+test/fixtures/*.y4m
