@@ -21,7 +21,7 @@
   /* export columns, in output order */
   var COLS = [
     ['type', 'Type'], ['assetTag', 'Asset Tag'], ['mac', 'MAC Address'], ['serial', 'Serial Number'], ['meraki', 'Meraki Serial'],
-    ['pid', 'Model (PID)'], ['partNo', 'Part Number'], ['clei', 'CLEI'], ['note', 'Note'], ['scannedAt', 'Scanned At'], ['site', 'Site'], ['file', 'File']
+    ['pid', 'Model (PID)'], ['partNo', 'Part Number'], ['clei', 'CLEI'], ['note', 'Note'], ['scannedAt', 'Scanned At'], ['site', 'Site'], ['file', 'File'], ['dup', 'Duplicate Of']
   ];
   var COL_HEAD = {}; COLS.forEach(function (c) { COL_HEAD[c[0]] = c[1]; });
 
@@ -54,7 +54,7 @@
       }
     } catch (e) {}
   }
-  function save() { try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {} }
+  function save() { invalidateDups(); try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {} }
 
   /* ---------- helpers ---------- */
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -78,8 +78,40 @@
   function missingOf(row) { return expectedFor(row.type).filter(function (f) { return !row[f]; }); }
   function counts(f) {
     var done = f.rows.filter(function (r) { return !missingOf(r).length; }).length;
-    return { total: f.rows.length, done: done, miss: f.rows.length - done };
+    return { total: f.rows.length, done: done, miss: f.rows.length - done, dup: f.rows.filter(function (r) { return dupsOf(f, r).length; }).length };
   }
+
+  /* ---------- duplicates (across every file) ---------- */
+  var DUP_FIELDS = ['assetTag', 'mac', 'serial', 'meraki'];
+  function dupKey(k, v) {
+    v = String(v == null ? '' : v).trim();
+    if (!v) return '';
+    return k + '|' + (k === 'mac' ? (Core.normalizeMac(v) || v.toUpperCase()) : v.toUpperCase());
+  }
+  var dupCache = null;
+  function dupIndex() {
+    if (dupCache) return dupCache;
+    var idx = {};
+    state.files.forEach(function (f) {
+      f.rows.forEach(function (r) {
+        DUP_FIELDS.forEach(function (k) { var key = dupKey(k, r[k]); if (key) (idx[key] = idx[key] || []).push({ f: f, r: r }); });
+      });
+    });
+    return (dupCache = idx);
+  }
+  function invalidateDups() { dupCache = null; }
+  function where(f, o) { return o.f === f ? '#' + o.r.n : '\u201c' + o.f.name + '\u201d #' + o.r.n; }
+  /* -> [{k, where: ['#3', '"Other file" #2']}] for each field of row that another device also has */
+  function dupsOf(f, row, values) {
+    var idx = dupIndex(), out = [];
+    DUP_FIELDS.forEach(function (k) {
+      var key = dupKey(k, (values || row)[k]); if (!key) return;
+      var others = (idx[key] || []).filter(function (o) { return o.r !== row; });
+      if (others.length) out.push({ k: k, where: others.map(function (o) { return where(f, o); }) });
+    });
+    return out;
+  }
+  function dupText(d) { return d.map(function (x) { return Core.FIELD_LABEL[x.k] + ' = ' + x.where.join(', '); }).join('; '); }
 
   /* ---------- files ---------- */
   function newFile(name, site, kind) {
@@ -238,12 +270,18 @@
     var got = Core.FIELD_ORDER.filter(function (k) { return dev[k]; }).length;
     $('liveType').textContent = got || f.kind !== 'Mixed' ? type : 'Looking…';
     $('liveType').className = 'badge ' + (type === 'Switch' ? 'Switch' : type === 'AP' ? 'AP' : 'Mixed');
+    var ldups = dupsOf(f, row || {}, dev), dupBy = {};
+    ldups.forEach(function (d) { dupBy[d.k] = d.where; });
     $('found').innerHTML = shown.map(function (k) {
       var val = dev[k] || (row && row[k] ? row[k] + ' (already saved)' : '');
-      return '<li class="' + (dev[k] ? 'got' : 'miss') + '"><span class="k">' + esc(Core.FIELD_LABEL[k]) + '</span><span class="v">' + esc(val || 'not yet') + '</span></li>';
+      var cls = dev[k] ? (dupBy[k] ? 'got dup' : 'got') : 'miss';
+      return '<li class="' + cls + '"><span class="k">' + esc(Core.FIELD_LABEL[k]) + '</span><span class="v">' + esc(val || 'not yet') +
+        (dev[k] && dupBy[k] ? '<em>Already scanned: ' + esc(dupBy[k].join(', ')) + '</em>' : '') + '</span></li>';
     }).join('');
     var missing = exp.filter(function (k) { return !dev[k] && !(row && row[k]); }).length;
+    $('liveMsg').classList.toggle('dup', ldups.length > 0 && live.running);
     $('liveMsg').textContent = !live.running ? 'Starting camera…' :
+      ldups.length ? 'Duplicate: this device looks already scanned (' + ldups[0].where.join(', ') + '). Check before saving.' :
       !live.codes.size ? (live.frames > 6 ? 'No barcodes yet. Move closer and hold steady.' : 'Looking for barcodes…') :
       missing ? 'Reading… ' + plural(missing, 'field') + ' to go. Move slowly along the label.' : 'All expected fields read. Tap Save device.';
     $('btnSaveDev').disabled = !got;
@@ -256,7 +294,11 @@
     var tid = live.target;
     var row = ingest(f, codes, tid);
     save(); renderFile();
-    if (row) { var s = summary(row); setStatus('Saved. ' + s.text + (tid ? '' : ' Point at the next device.'), s.kind); }
+    if (row) {
+      var s = summary(row), d = dupsOf(f, row);
+      if (d.length) setStatus('Saved, but this is a duplicate: ' + dupText(d) + '.', 'bad');
+      else setStatus('Saved. ' + s.text + (tid ? '' : ' Point at the next device.'), s.kind);
+    }
     live.codes = new Map(); live.frames = 0;
     if (tid) stopLive(); else renderLive();
   }
@@ -394,7 +436,9 @@
       '<span class="ttl"><span class="model' + (row.pid ? '' : ' none') + '">' + esc(row.pid || 'Model not read') + '</span><span class="when">' + esc(row.type === 'Other' ? 'Device' : row.type) + ' · ' + esc(niceDate(row.scannedAt)) + '</span></span>' +
       (f.kind === 'Mixed' ? '<select class="typesel" data-row="' + row.id + '" data-field="type" aria-label="Device type">' +
         Core.TYPES.map(function (t) { return '<option' + (t === row.type ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>' : '') +
-      '<span class="state ' + (miss.length ? 'warn' : 'ok') + '">' + (miss.length ? miss.length + ' missing' : 'Complete') + '</span></header>';
+      '<span class="state dupchip" hidden>Duplicate</span>' +
+      '<span class="state fill ' + (miss.length ? 'warn' : 'ok') + '">' + (miss.length ? miss.length + ' missing' : 'Complete') + '</span></header>' +
+      '<div class="dupbox" hidden></div>';
     h += '<div class="fields">' + exp.concat(['note']).map(function (k) { return fieldHtml(row, k); }).join('') + '</div>';
     if (extra.length) h += '<details><summary>More fields (' + extra.length + ')</summary><div class="fields" style="margin-top:8px">' + extra.map(function (k) { return fieldHtml(row, k); }).join('') + '</div></details>';
     if (row.serialAgrees) h += '<p class="note-ok">Serial read the same from two labels.</p>';
@@ -403,10 +447,25 @@
     h += '<div class="actions"><button type="button" class="btn small" data-act="live" data-id="' + row.id + '">Scan more</button><button type="button" class="btn small" data-act="photo" data-id="' + row.id + '">Add photo</button><span class="grow"></span><button type="button" class="btn small danger" data-act="del" data-id="' + row.id + '">Delete</button></div></li>';
     return h;
   }
+  function refreshDups(f) {
+    invalidateDups();
+    document.querySelectorAll('#devices .card').forEach(function (card) {
+      var row = findRow(f, card.dataset.row); if (!row) return;
+      var d = dupsOf(f, row), box = card.querySelector('.dupbox');
+      card.classList.toggle('dup', d.length > 0);
+      card.querySelector('.dupchip').hidden = !d.length;
+      box.hidden = !d.length;
+      box.innerHTML = d.map(function (x) { return '<div><b>' + esc(Core.FIELD_LABEL[x.k]) + '</b> also on ' + esc(x.where.join(', ')) + '</div>'; }).join('');
+      card.querySelectorAll('.field').forEach(function (el) {
+        var inp = el.querySelector('input');
+        el.classList.toggle('dupfield', d.some(function (x) { return x.k === inp.dataset.field; }));
+      });
+    });
+  }
   function renderStats(f) {
     var c = counts(f);
-    $('stTotal').textContent = c.total; $('stDone').textContent = c.done; $('stMiss').textContent = c.miss;
-    $('bbText').textContent = c.total ? plural(c.total, 'device') + (c.miss ? ' · ' + c.miss + ' missing info' : ' · all complete') : 'No devices yet';
+    $('stTotal').textContent = c.total; $('stDone').textContent = c.done; $('stMiss').textContent = c.miss; $('stDup').textContent = c.dup;
+    $('bbText').textContent = c.total ? plural(c.total, 'device') + (c.dup ? ' · ' + plural(c.dup, 'duplicate') : '') + (c.miss ? ' · ' + c.miss + ' missing info' : c.dup ? '' : ' · all complete') : 'No devices yet';
     $('btnExport').disabled = !c.total;
     $('devHead').textContent = c.total ? 'Devices (' + c.total + ')' : 'Devices';
   }
@@ -417,7 +476,7 @@
     $('fSite').textContent = (f.site ? f.site + ' · ' : '') + 'Created ' + niceDate(f.created);
     $('devices').innerHTML = f.rows.slice().reverse().map(function (r) { return cardHtml(f, r); }).join('');
     $('devEmpty').hidden = f.rows.length > 0;
-    renderStats(f); setBusy(busy);
+    refreshDups(f); renderStats(f); setBusy(busy);
   }
 
   /* ---------- export ---------- */
@@ -427,6 +486,7 @@
       f.kind === 'Switch' ? ['assetTag', 'mac', 'serial', 'pid', 'partNo', 'clei', 'note', 'scannedAt'] :
       ['type', 'assetTag', 'mac', 'serial', 'meraki', 'pid', 'partNo', 'clei', 'note', 'scannedAt'];
     if (f.site) full = full.concat(['site']);
+    if (f.rows.some(function (r) { return dupsOf(f, r).length; })) full = full.concat(['dup']);
     if (preset === 'custom' && Array.isArray(state.exp.custom)) {
       var pick = state.exp.custom;
       return COLS.map(function (c) { return c[0]; }).filter(function (k) { return pick.indexOf(k) >= 0; });
@@ -436,8 +496,12 @@
   function exportTable(f) {
     var cols = presetCols(f, state.exp.preset), o = state.exp;
     var merakiSub = o.apSerial === 'meraki' && cols.indexOf('meraki') < 0;
-    var rows = f.rows.slice().sort(function (a, b) { return a.n - b.n; }).map(function (r) {
+    var sorted = f.rows.slice().sort(function (a, b) { return a.n - b.n; }), dupRows = [];
+    var rows = sorted.map(function (r, i) {
+      var d = dupsOf(f, r);
+      if (d.length) dupRows.push(i);
       return cols.map(function (k) {
+        if (k === 'dup') return dupText(d);
         if (k === 'mac') return r.mac ? Core.formatMac(r.mac, o.macStyle) : '';
         if (k === 'serial' && merakiSub && r.type === 'AP' && r.meraki) return r.meraki;
         if (k === 'site') return f.site || '';
@@ -445,7 +509,7 @@
         return r[k] == null ? '' : String(r[k]);
       });
     });
-    return { cols: cols, header: cols.map(function (k) { return COL_HEAD[k]; }), rows: rows };
+    return { cols: cols, header: cols.map(function (k) { return COL_HEAD[k]; }), rows: rows, dupRows: dupRows };
   }
   function toCsv(t) {
     return [t.header].concat(t.rows).map(function (r) { return r.map(Core.csvCell).join(','); }).join('\r\n') + '\r\n';
@@ -460,7 +524,7 @@
   }
   function buildFile(f) {
     var t = exportTable(f), name = exportName(f);
-    if (state.exp.format === 'xlsx') return new File([Xlsx.build(f.name, t.header, t.rows)], name, { type: Xlsx.MIME });
+    if (state.exp.format === 'xlsx') return new File([Xlsx.build(f.name, t.header, t.rows, { highlight: t.dupRows })], name, { type: Xlsx.MIME });
     return new File([toCsv(t)], name, { type: 'text/csv' });
   }
 
@@ -474,7 +538,12 @@
   function renderExport() {
     var f = cur(); if (!f) return;
     var c = counts(f), o = state.exp;
-    $('exTotal').textContent = c.total; $('exDone').textContent = c.done; $('exMiss').textContent = c.miss;
+    $('exTotal').textContent = c.total; $('exDone').textContent = c.done; $('exMiss').textContent = c.miss; $('exDup').textContent = c.dup;
+    var dupList = f.rows.filter(function (r) { return dupsOf(f, r).length; });
+    $('exDupCallout').hidden = !dupList.length;
+    $('exDupCallout').textContent = dupList.length ? plural(dupList.length, 'device') + ' look like duplicates: ' +
+      dupList.slice(0, 4).map(function (r) { return '#' + r.n + ' (' + dupText(dupsOf(f, r)) + ')'; }).join('; ') + (dupList.length > 4 ? '; and ' + (dupList.length - 4) + ' more' : '') +
+      '. They are highlighted in the preview and in the Excel file.' : '';
     var bad = f.rows.filter(function (r) { return missingOf(r).length; });
     var co = $('exCallout');
     co.hidden = !c.total;
@@ -497,7 +566,7 @@
     $('prevHead').textContent = 'Preview · ' + plural(t.rows.length, 'row') + ', ' + plural(t.cols.length, 'column');
     $('prevTable').innerHTML = !t.cols.length ? '<tr><td class="na">Pick at least one column.</td></tr>' :
       '<thead><tr>' + t.header.map(function (h) { return '<th>' + esc(h) + '</th>'; }).join('') + '</tr></thead><tbody>' +
-      (t.rows.length ? t.rows.map(function (r) { return '<tr>' + r.map(function (v) { return v ? '<td>' + esc(v) + '</td>' : '<td class="na">—</td>'; }).join('') + '</tr>'; }).join('') :
+      (t.rows.length ? t.rows.map(function (r, i) { return '<tr' + (t.dupRows.indexOf(i) >= 0 ? ' class="dup"' : '') + '>' + r.map(function (v) { return v ? '<td>' + esc(v) + '</td>' : '<td class="na">—</td>'; }).join('') + '</tr>'; }).join('') :
         '<tr><td class="na" colspan="' + t.cols.length + '">No devices yet.</td></tr>') + '</tbody>';
     var ok = c.total > 0 && t.cols.length > 0;
     ['btnShare', 'btnDownload', 'btnCopy'].forEach(function (id) { $(id).disabled = !ok; });
@@ -644,9 +713,10 @@
     var f = cur(), row = findRow(f, t.dataset.row); if (!row) return;
     if (t.dataset.field === 'type') { row.type = t.value; save(); renderFile(); return; }
     if (t.dataset.field === 'mac') { var n = Core.normalizeMac(t.value); if (n) { row.mac = n; t.value = n; save(); } }
+    if (DUP_FIELDS.indexOf(t.dataset.field) >= 0) { refreshDups(f); renderStats(f); }
     if (t.dataset.field !== 'note') {
-      var card = t.closest('.card'), miss = missingOf(row), chip = card && card.querySelector('.state');
-      if (chip) { chip.className = 'state ' + (miss.length ? 'warn' : 'ok'); chip.textContent = miss.length ? miss.length + ' missing' : 'Complete'; }
+      var card = t.closest('.card'), miss = missingOf(row), chip = card && card.querySelector('.state.fill');
+      if (chip) { chip.className = 'state fill ' + (miss.length ? 'warn' : 'ok'); chip.textContent = miss.length ? miss.length + ' missing' : 'Complete'; }
       t.closest('.field').classList.toggle('missing', !row[t.dataset.field]);
     }
   });

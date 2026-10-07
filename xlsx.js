@@ -56,8 +56,9 @@
   function colName(i) { var s = ''; i++; while (i > 0) { var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
   function sheetName(s) { return (String(s || 'Sheet1').replace(/[\[\]:*?\/\\]/g, ' ').trim() || 'Sheet1').slice(0, 31); }
 
-  /* header: [string], rows: [[string]] -> Uint8Array (.xlsx bytes) */
-  function build(name, header, rows) {
+  /* header: [string], rows: [[string]], opts.highlight: [row index] shaded red -> Uint8Array (.xlsx bytes) */
+  function build(name, header, rows, opts) {
+    var hl = {}; ((opts && opts.highlight) || []).forEach(function (i) { hl[i + 1] = true; });
     var all = [header].concat(rows), ncol = header.length;
     var widths = header.map(function (_, c) {
       var w = all.reduce(function (m, r) { return Math.max(m, String(r[c] == null ? '' : r[c]).length); }, 6);
@@ -71,8 +72,8 @@
       '<sheetData>' + all.map(function (r, ri) {
         return '<row r="' + (ri + 1) + '">' + header.map(function (_, ci) {
           var v = r[ci] == null ? '' : String(r[ci]);
-          var ref = colName(ci) + (ri + 1), s = ri === 0 ? ' s="1"' : '';
-          return v === '' && ri ? '' : '<c r="' + ref + '" t="inlineStr"' + s + '><is><t xml:space="preserve">' + xml(v) + '</t></is></c>';
+          var ref = colName(ci) + (ri + 1), s = ri === 0 ? ' s="1"' : hl[ri] ? ' s="2"' : '';
+          return v === '' && ri && !hl[ri] ? '' : '<c r="' + ref + '" t="inlineStr"' + s + '><is><t xml:space="preserve">' + xml(v) + '</t></is></c>';
         }).join('') + '</row>';
       }).join('') + '</sheetData>' +
       (rows.length ? '<autoFilter ref="A1:' + last + '"/>' : '') +
@@ -95,11 +96,13 @@
         '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
       'xl/styles.xml': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
         '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
-        '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
-        '<fill><patternFill patternType="solid"><fgColor rgb="FFE8F1FC"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+        '<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFE8F1FC"/><bgColor indexed="64"/></patternFill></fill>' +
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFFDECEC"/><bgColor indexed="64"/></patternFill></fill></fills>' +
         '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-        '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs>' +
+        '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>' +
+        '<xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/></cellXfs>' +
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>',
       'xl/worksheets/sheet1.xml': sheet
     };
