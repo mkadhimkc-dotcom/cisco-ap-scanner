@@ -167,9 +167,10 @@
   }
 
   /* ---------- live camera ---------- */
-  /* justSaved: identifying values (asset tag, MAC, serials) of the device just saved. Codes carrying them are
-     ignored until the next save, so the label still in front of the camera is not read again as a duplicate
-     of itself and does not leak into the next device. Shared codes such as the model are still read. */
+  /* justSaved: identifying values (asset tag, MAC, serials) of the device just saved. After Save every box is
+     blank and nothing is read until a code identifying a different device appears; from then on the new device
+     fills in from scratch, and codes carrying the saved device's values are still ignored until the next save,
+     so the label still in view is neither read as a duplicate of itself nor leaks into the next device. */
   var live = { stream: null, track: null, running: false, codes: new Map(), target: null, frames: 0, canvas: null, justSaved: null };
 
   async function startLive(tid) {
@@ -235,9 +236,15 @@
       if (!live.running) break;
       live.frames++;
       var fresh = false, js = live.justSaved;
+      if (js) {
+        var cls = list.map(function (c) { return { c: c, hits: classifyCode(c) }; });
+        if (!js.started) js.started = cls.some(function (x) { return x.hits.some(function (h) { return DUP_FIELDS.indexOf(h.field) >= 0 && !js.vals.has(dupKey(h.field, h.value)); }); });
+        list = !js.started ? [] : cls.filter(function (x) {
+          return !x.hits.some(function (h) { return DUP_FIELDS.indexOf(h.field) >= 0 && js.vals.has(dupKey(h.field, h.value)); });
+        }).map(function (x) { return x.c; });
+      }
       list.forEach(function (c) {
         var key = c.format + '|' + c.text, h = live.codes.get(key);
-        if (js && isJustSaved(c, js)) return;
         if (h) h.count += c.count; else { live.codes.set(key, { format: c.format, text: c.text, count: c.count }); fresh = true; }
       });
       if (fresh) flash();
@@ -246,11 +253,7 @@
     }
   }
 
-  function isJustSaved(c, js) {
-    var hits = [];
-    try { hits = Core.classify(c, { assetRe: state.assetRe }); } catch (e) {}
-    return hits.some(function (h) { return DUP_FIELDS.indexOf(h.field) >= 0 && js.vals.has(dupKey(h.field, h.value)); });
-  }
+  function classifyCode(c) { try { return Core.classify(c, { assetRe: state.assetRe }) || []; } catch (e) { return []; } }
 
   function flash() {
     var el = $('flash'); el.classList.add('on');
@@ -282,10 +285,10 @@
     $('liveMsg').classList.toggle('dup', ldups.length > 0 && live.running);
     $('liveMsg').textContent = !live.running ? 'Starting camera…' :
       ldups.length ? 'Duplicate: this device looks already scanned (' + ldups[0].where.join(', ') + '). Check before saving.' :
-      live.justSaved && !DUP_FIELDS.some(function (k) { return dev[k]; }) ? 'Saved as #' + live.justSaved.n + '. Point at the next device.' :
+      live.justSaved && !live.justSaved.started ? 'Saved as #' + live.justSaved.n + '. Point at the next device.' :
       !live.codes.size ? (live.frames > 6 ? 'No barcodes yet. Move closer and hold steady.' : 'Looking for barcodes…') :
       missing ? 'Reading… ' + plural(missing, 'field') + ' to go. Move slowly along the label.' : 'All expected fields read. Tap Save device.';
-    var waiting = live.justSaved && !DUP_FIELDS.some(function (k) { return dev[k]; });
+    var waiting = live.justSaved && !live.justSaved.started;
     $('btnSaveDev').disabled = !got || waiting;
     $('btnSaveDev').textContent = got && !waiting ? 'Save (' + got + ')' : 'Save device';
   }
@@ -302,7 +305,7 @@
       else setStatus('Saved. ' + s.text + (tid ? '' : ' Point at the next device.'), s.kind);
     }
     live.justSaved = row && !tid ? {
-      n: num(f, row),
+      n: num(f, row), started: false,
       vals: new Set(DUP_FIELDS.map(function (k) { return dupKey(k, row[k]); }).filter(Boolean))
     } : null;
     live.codes = new Map(); live.frames = 0;
