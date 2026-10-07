@@ -238,6 +238,16 @@ dialog.sheet::backdrop { background: rgba(17, 24, 39, 0.35); }
 .askbtns.list { grid-template-columns: 1fr; max-height: 50vh; overflow-y: auto; }
 .askbtns .listbtn { justify-content: flex-start; text-align: left; font-family: var(--font-data); font-size: 14px; }
 .live.asset-mode .found li { font-size: 15px; }
+.progress { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.progress > i { display: block; height: 100%; width: 0; background: var(--ok); transition: width 0.25s; }
+.progtext { margin: -6px 0 0; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.filters button { flex-direction: row; min-height: 44px; }
+.filters button b { font-variant-numeric: tabular-nums; margin-left: 4px; }
+.filters button[disabled] { opacity: 0.45; cursor: default; }
+.switch { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; cursor: pointer; }
+.switch input { width: 22px; height: 22px; margin: 2px 0 0; accent-color: var(--accent); flex: none; }
+.switch span { display: grid; gap: 2px; font-size: 14px; color: var(--ink); }
+.switch small { font-size: 12.5px; color: var(--ink-2); }
 .note-ok { color: var(--ok); font-size: 13px; margin: 0; }
 .warns { margin: 0; padding: 8px 12px; list-style: none; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 13px; display: grid; gap: 4px; }
 details > summary { cursor: pointer; font-size: 13px; color: var(--ink-2); min-height: 32px; display: flex; align-items: center; }
@@ -322,8 +332,9 @@ table.prev tr.dup td { background: var(--bad-soft); }
         <label class="lbl" for="assetRe">Asset tag pattern (regular expression)
           <input class="input" id="assetRe" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" value="^\d{4,9}$">
         </label>
-        <p class="hint">Images are read on this phone and never uploaded. Files are kept in this browser until you delete them.</p>
-        <button type="button" class="btn danger" id="btnDelAll" hidden>Delete all files</button>
+        <label class="switch"><input type="checkbox" id="autoSave"><span><b>Auto-save in live scan</b><small>When every field the label should carry (asset tag aside) is confirmed, the device is saved and the boxes clear for the next one. Off by default.</small></span></label>
+        <p class="hint">Images are read on this phone and never uploaded. <span id="storageNote"></span> Files stay until you delete them; export before clearing Safari website data.</p>
+        <button type="button" class="btn danger" id="btnDelAll" hidden>Delete all data</button>
       </div>
     </details>
   </section>
@@ -341,6 +352,8 @@ table.prev tr.dup td { background: var(--bad-soft); }
           <span class="site" id="fSite"></span>
         </div>
       </div>
+      <div class="progress" id="fProgressWrap" role="progressbar" aria-label="Devices complete" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="fProgress"></i></div>
+      <p class="progtext" id="fProgressText"></p>
       <div class="stats">
         <div><b id="stTotal">0</b><span>Devices</span></div>
         <div class="ok"><b id="stDone">0</b><span>Complete</span></div>
@@ -405,6 +418,11 @@ table.prev tr.dup td { background: var(--bad-soft); }
     </section>
 
     <div class="sectionhead"><h2 id="devHead">Devices</h2><span></span></div>
+    <div class="seg filters" id="devFilter" role="group" aria-label="Show devices" hidden>
+      <button type="button" data-filter="all" aria-pressed="true"><span class="t">All <b>0</b></span></button>
+      <button type="button" data-filter="incomplete" aria-pressed="false"><span class="t">Incomplete <b>0</b></span></button>
+      <button type="button" data-filter="dups" aria-pressed="false"><span class="t">Duplicates <b>0</b></span></button>
+    </div>
     <ul id="devices"></ul>
     <div class="empty-list" id="devEmpty"><p>No devices in this file yet. Start a live scan and point at the first device's labels.</p></div>
 
@@ -412,7 +430,9 @@ table.prev tr.dup td { background: var(--bad-soft); }
       <summary>File details</summary>
       <div class="settings">
         <label class="lbl" for="fName">File name <input class="input" id="fName" type="text" autocomplete="off"></label>
-        <label class="lbl" for="fSiteIn">Site or location <input class="input" id="fSiteIn" type="text" autocomplete="off" placeholder="Optional"></label>
+        <label class="lbl" for="fLocation">Location <input class="input" id="fLocation" type="text" autocomplete="off" placeholder="Optional, e.g. Building 2, IDF 3"></label>
+        <label class="lbl" for="fRack">Rack / U <input class="input" id="fRack" type="text" autocomplete="off" placeholder="Optional, e.g. R2 U12-U14"></label>
+        <p class="hint">Location and Rack/U apply to every device in this file and can be added as export columns.</p>
         <button type="button" class="btn danger" id="btnDelFile">Delete this file</button>
       </div>
     </details>
@@ -493,9 +513,9 @@ table.prev tr.dup td { background: var(--bad-soft); }
 <div class="bottombar" id="bottomBar" hidden>
   <div class="in">
     <span id="bbText">0 devices</span>
-    <button type="button" class="btn primary" id="btnExport">
+    <button type="button" class="btn" id="btnExport">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
-      Export
+      Finish and export
     </button>
   </div>
 </div>
@@ -518,8 +538,11 @@ table.prev tr.dup td { background: var(--bad-soft); }
     <label class="lbl" for="newName">File name
       <input class="input" id="newName" type="text" autocomplete="off" required>
     </label>
-    <label class="lbl" for="newSite">Site or location
-      <input class="input" id="newSite" type="text" autocomplete="off" placeholder="Optional, e.g. Building 2, IDF 3">
+    <label class="lbl" for="newLocation">Location
+      <input class="input" id="newLocation" type="text" autocomplete="off" placeholder="Optional, e.g. Building 2, IDF 3">
+    </label>
+    <label class="lbl" for="newRack">Rack / U
+      <input class="input" id="newRack" type="text" autocomplete="off" placeholder="Optional, e.g. R2 U12-U14">
     </label>
     <div class="lbl" role="radiogroup" aria-label="What are you scanning?">What are you scanning?
       <div class="choices">

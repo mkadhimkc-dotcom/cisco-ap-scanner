@@ -13,3 +13,19 @@ test('AP feed: MAC, serial, Meraki serial and PID read in < 8 s, no main-thread 
   expect(r.longTasks.filter(d => d > 50)).toEqual([]);
   expect(r.values).toEqual({ mac: '780F810A68B0', serial: 'FJC295016BD', meraki: 'Q5AP-9XMF-374L', pid: 'CW9166I-B V06' });
 });
+
+test('auto-save: a fully confirmed AP is saved and the boxes clear for the next one', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('#decoderPill')).toHaveAttribute('data-kind', 'ok', { timeout: 30000 });
+  await page.click('#viewHome details summary');
+  await page.check('#autoSave');
+  const { newFile } = await import('./helpers.mjs');
+  await newFile(page, 'Auto', 'AP');
+  await page.click('#btnLive');
+  await expect(page.locator('#devices .card')).toHaveCount(1, { timeout: 15000 });
+  await expect(page.locator('#liveMsg')).toHaveText('Saved as #1. Point at the next device.');
+  await expect(page.locator('#found li.got')).toHaveCount(0);
+  await page.waitForTimeout(2000);   // the same AP stays in view: no second device
+  await expect(page.locator('#devices .card')).toHaveCount(1);
+  await expect(page.locator('#devices .card input[data-field="meraki"]')).toHaveValue('Q5AP-9XMF-374L');
+});

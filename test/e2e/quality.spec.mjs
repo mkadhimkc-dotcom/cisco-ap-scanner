@@ -76,13 +76,10 @@ test('delete with undo; merge into another device with undo', async ({ page }) =
 });
 
 test('export warns about values read only once', async ({ page }) => {
-  await newFile(page, 'Once', 'AP');
-  await addByHand(page, { serial: 'FJC295016BD' });
-  await page.evaluate(() => {   // simulate a single-read scan result on the stored row
-    const s = JSON.parse(localStorage.getItem('labelscanner.v3')); s.files[0].rows[0].conf = { serial: 'single' };
-    localStorage.setItem('labelscanner.v3', JSON.stringify(s));
-  });
-  await page.reload();
+  await newFile(page, 'Once', 'Switch');
+  await addPhoto(page, 'switch.jpg');   // the photo pipeline reads the Code39 asset tag in one pass only
+  await expect(page.locator('#devices .card')).toHaveCount(1, { timeout: 60000 });
   await page.click('#btnExport');
-  await expect(page.locator('#exOnceCallout')).toContainText('1 value was read only once');
+  await expect(page.locator('#exOnceCallout')).toContainText('read only once');
+  await expect(page.locator('#exOnceCallout')).toContainText('#1 Asset tag');
 });

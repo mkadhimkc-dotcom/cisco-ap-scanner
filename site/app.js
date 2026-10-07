@@ -7,6 +7,7 @@ import { csvCell } from './src/csv.js';
 import { Scanner } from './src/scanner.js';
 import * as Cam from './src/camera.js';
 import { Xlsx } from './src/xlsx.js';
+import { Store } from './src/store.js';
 
 const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_LABEL, TYPES, EXPECTED, DEFAULT_ASSET_RE, buildDevice, mergeDevice, csvCell };
 
@@ -15,7 +16,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   var $ = function (id) { return document.getElementById(id); };
   var LABEL = Object.assign({ note: 'Note', hwRev: 'Hardware rev' }, Core.FIELD_LABEL);
   var oui = null;   // Cisco/Meraki OUI prefixes, loaded at start (data/oui-cisco.json)
-  var STORE = 'labelscanner.v3';
+  var store = new Store();
 
   var KIND = {
     AP: { label: 'Access points', one: 'AP' },
@@ -33,29 +34,40 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   /* export columns, in output order */
   var COLS = [
     ['type', 'Type'], ['assetTag', 'Asset Tag'], ['mac', 'MAC Address'], ['serial', 'Serial Number'], ['meraki', 'Meraki Serial'],
-    ['pid', 'Model (PID)'], ['partNo', 'Part Number'], ['clei', 'CLEI'], ['note', 'Note'], ['scannedAt', 'Scanned At'], ['site', 'Site'], ['file', 'File'], ['dup', 'Duplicate Of']
+    ['pid', 'Model (PID)'], ['partNo', 'Part Number'], ['clei', 'CLEI'], ['note', 'Note'], ['scannedAt', 'Scanned At'], ['location', 'Location'], ['rack', 'Rack/U'], ['file', 'File'], ['dup', 'Duplicate Of']
   ];
   var COL_HEAD = {}; COLS.forEach(function (c) { COL_HEAD[c[0]] = c[1]; });
 
   var state = {
-    files: [], assetRe: Core.DEFAULT_ASSET_RE,
+    files: [], assetRe: Core.DEFAULT_ASSET_RE, autoSave: false,
     exp: { format: 'xlsx', preset: 'full', custom: null, macStyle: 'colons', apSerial: 'cisco' }
   };
-  var busy = false, targetId = null, scanner = null, route = { view: 'home' }, entryLevel = null;
+  var busy = false, targetId = null, scanner = null, route = { view: 'home' }, entryLevel = null, listFilter = 'all';
 
-  /* ---------- storage ---------- */
-  function load() {
-    try {
-      var s = JSON.parse(localStorage.getItem(STORE) || 'null');
-      if (s && typeof s === 'object') {
-        if (Array.isArray(s.files)) state.files = s.files;
-        if (typeof s.assetRe === 'string') state.assetRe = s.assetRe;
-        if (s.exp && typeof s.exp === 'object') Object.assign(state.exp, s.exp);
-        return;
-      }
-    } catch (e) {}
+  /* ---------- storage (IndexedDB via src/store.js) ---------- */
+  async function load() {
+    var s = await store.load();
+    if (s && typeof s === 'object') {
+      if (Array.isArray(s.files)) state.files = s.files;
+      if (typeof s.assetRe === 'string') state.assetRe = s.assetRe;
+      if (typeof s.autoSave === 'boolean') state.autoSave = s.autoSave;
+      if (typeof s.zoom === 'number') state.zoom = s.zoom;
+      if (s.exp && typeof s.exp === 'object') Object.assign(state.exp, s.exp);
+    }
+    // files from before Location/Rack existed kept their place in `site`
+    var migrated = false;
+    state.files.forEach(function (f) {
+      if (f.location == null) { f.location = f.site || ''; delete f.site; migrated = true; }
+      if (f.rack == null) { f.rack = ''; migrated = true; }
+    });
+    if (migrated) save();
   }
-  function save() { invalidateDups(); try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {} }
+  var persisted = false;
+  function save() {
+    invalidateDups();
+    store.save(function () { return state; });
+    if (!persisted) { persisted = true; store.persist(); }
+  }
 
   /* ---------- helpers ---------- */
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -115,9 +127,9 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   function dupText(d) { return d.map(function (x) { return Core.FIELD_LABEL[x.k] + ' = ' + x.where.join(', '); }).join('; '); }
 
   /* ---------- files ---------- */
-  function newFile(name, site, kind) {
+  function newFile(name, location, rack, kind) {
     var now = stamp(new Date());
-    var f = { id: 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: name, site: site || '', kind: KIND[kind] ? kind : 'Mixed', created: now, updated: now, rows: [], seq: 0 };
+    var f = { id: 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: name, location: location || '', rack: rack || '', kind: KIND[kind] ? kind : 'Mixed', created: now, updated: now, rows: [], seq: 0 };
     state.files.push(f);
     return f;
   }
@@ -300,6 +312,19 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     });
     if (fresh) flash();
     if (live.mode === 'asset') finishAssetTag();
+    else maybeAutoSave();
+  }
+  /* Auto-save (Settings, off by default): once every expected field for the detected type is confirmed, save
+     and clear for the next device. The asset tag is not required: it is usually a separate sticker. */
+  function maybeAutoSave() {
+    if (!state.autoSave || live.target || live.saving || (live.justSaved && !live.justSaved.started)) return;
+    var f = cur(); if (!f) return;
+    var dev = liveDevice(), type = f.kind !== 'Mixed' ? f.kind : dev.type;
+    var need = expectedFor(type).filter(function (k) { return k !== 'assetTag'; });
+    if (type === 'Other' || !need.every(function (k) { return confirmedField(dev, k); })) return;
+    live.saving = true;
+    flash(); try { if (navigator.vibrate) navigator.vibrate([40, 50, 40]); } catch (e) {}
+    saveLiveDevice().finally(function () { live.saving = false; });
   }
   function finishAssetTag() {
     var f = cur(), row = f && findRow(f, live.target), dev = liveDevice();
@@ -532,7 +557,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     $('title').textContent = r.view === 'home' ? 'Label Scanner' : r.view === 'export' ? 'Export · ' + f.name : f.name;
     document.title = r.view === 'home' ? 'Label Scanner' : f.name + ' · Label Scanner';
     if (r.view === 'home') renderHome();
-    if (r.view === 'file') { renderFile(); $('fName').value = f.name; $('fSiteIn').value = f.site; }
+    if (r.view === 'file') { listFilter = 'all'; renderFile(); $('fName').value = f.name; $('fLocation').value = f.location; $('fRack').value = f.rack; }
     if (r.view === 'export') openExport();
     if (changed) window.scrollTo(0, 0);
   }
@@ -545,7 +570,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     $('btnDelAll').hidden = !list.length;
     $('files').innerHTML = list.map(function (f) {
       var c = counts(f);
-      var sub = KIND[f.kind].label + (f.site ? ' · ' + f.site : '') + ' · ' + niceDate(f.updated);
+      var sub = KIND[f.kind].label + (f.location ? ' · ' + f.location : '') + (f.rack ? ' · ' + f.rack : '') + ' · ' + niceDate(f.updated);
       return '<li class="fileitem"><a class="file" href="#/f/' + encodeURIComponent(f.id) + '">' +
         '<span class="ficon ' + f.kind + '">' + ICON[f.kind] + '</span>' +
         '<span class="meta"><span class="name">' + esc(f.name) + '</span><span class="sub">' + esc(sub) + '</span></span>' +
@@ -624,8 +649,19 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   }
   function renderStats(f) {
     var c = counts(f);
+    var pct = c.total ? Math.round(c.done / c.total * 100) : 0;
+    $('fProgress').style.width = pct + '%';
+    $('fProgressWrap').setAttribute('aria-valuenow', String(pct));
+    $('fProgressText').textContent = c.total ? plural(c.total, 'device') + ' · ' + c.done + ' complete · ' + c.miss + ' missing fields' + (c.dup ? ' · ' + plural(c.dup, 'duplicate') : '') : 'No devices yet';
+    $('devFilter').hidden = !c.total;
+    [['all', c.total], ['incomplete', c.miss], ['dups', c.dup]].forEach(function (x) {
+      var b = $('devFilter').querySelector('[data-filter="' + x[0] + '"]');
+      b.querySelector('b').textContent = x[1];
+      b.setAttribute('aria-pressed', String(listFilter === x[0]));
+      b.disabled = x[0] !== 'all' && !x[1];
+    });
     $('stTotal').textContent = c.total; $('stDone').textContent = c.done; $('stMiss').textContent = c.miss; $('stDup').textContent = c.dup;
-    $('bbText').textContent = c.total ? plural(c.total, 'device') + (c.dup ? ' · ' + plural(c.dup, 'duplicate') : '') + (c.miss ? ' · ' + c.miss + ' missing info' : c.dup ? '' : ' · all complete') : 'No devices yet';
+    $('bbText').textContent = c.total ? plural(c.total, 'device') + ' · ' + c.done + ' complete' : 'No devices yet';
     $('btnExport').disabled = !c.total;
     $('devHead').textContent = c.total ? 'Devices (' + c.total + ')' : 'Devices';
   }
@@ -633,8 +669,10 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     var f = cur(); if (!f) return;
     $('fIcon').className = 'ficon ' + f.kind; $('fIcon').innerHTML = ICON[f.kind];
     $('fBadge').className = 'badge ' + f.kind; $('fBadge').textContent = KIND[f.kind].label;
-    $('fSite').textContent = (f.site ? f.site + ' · ' : '') + 'Created ' + niceDate(f.created);
-    $('devices').innerHTML = f.rows.slice().reverse().map(function (r) { return cardHtml(f, r); }).join('');
+    $('fSite').textContent = [f.location, f.rack ? 'Rack/U ' + f.rack : ''].filter(Boolean).concat(['Created ' + niceDate(f.created)]).join(' · ');
+    var shown = f.rows.filter(function (r) { return listFilter === 'incomplete' ? missingOf(r).length > 0 : listFilter === 'dups' ? dupsOf(f, r).length > 0 : true; });
+    if (listFilter !== 'all' && !shown.length && f.rows.length) { listFilter = 'all'; shown = f.rows; }
+    $('devices').innerHTML = shown.slice().reverse().map(function (r) { return cardHtml(f, r); }).join('');
     $('devEmpty').hidden = f.rows.length > 0;
     refreshDups(f); renderStats(f); setBusy(busy);
   }
@@ -645,7 +683,8 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     var full = f.kind === 'AP' ? ['assetTag', 'mac', 'serial', 'meraki', 'pid', 'note', 'scannedAt'] :
       f.kind === 'Switch' ? ['assetTag', 'mac', 'serial', 'pid', 'partNo', 'clei', 'note', 'scannedAt'] :
       ['type', 'assetTag', 'mac', 'serial', 'meraki', 'pid', 'partNo', 'clei', 'note', 'scannedAt'];
-    if (f.site) full = full.concat(['site']);
+    if (f.location) full = full.concat(['location']);
+    if (f.rack) full = full.concat(['rack']);
     if (f.rows.some(function (r) { return dupsOf(f, r).length; })) full = full.concat(['dup']);
     if (preset === 'custom' && Array.isArray(state.exp.custom)) {
       var pick = state.exp.custom;
@@ -664,7 +703,8 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
         if (k === 'dup') return dupText(d);
         if (k === 'mac') return r.mac ? Core.formatMac(r.mac, o.macStyle) : '';
         if (k === 'serial' && merakiSub && r.type === 'AP' && r.meraki) return r.meraki;
-        if (k === 'site') return f.site || '';
+        if (k === 'location') return f.location || '';
+        if (k === 'rack') return f.rack || '';
         if (k === 'file') return f.name;
         return r[k] == null ? '' : String(r[k]);
       });
@@ -750,7 +790,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     var file = buildFile(f);
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
-        await navigator.share({ files: [file], title: file.name, text: f.name + (f.site ? ' (' + f.site + ')' : '') + ': ' + plural(f.rows.length, 'device') + ', exported ' + stamp(new Date()) + '.' });
+        await navigator.share({ files: [file], title: file.name, text: f.name + (f.location ? ' (' + f.location + ')' : '') + ': ' + plural(f.rows.length, 'device') + ', exported ' + stamp(new Date()) + '.' });
         setStatus('Shared ' + file.name + '.');
       } catch (e) { if (!e || e.name !== 'AbortError') setStatus('Sharing failed (' + (e && e.message || 'error') + '). Use Download instead.', 'warn'); }
     } else {
@@ -796,7 +836,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   $('newForm').addEventListener('submit', function (e) {
     e.preventDefault();
     var name = $('newName').value.trim() || defaultName(selectedKind());
-    var f = newFile(name, $('newSite').value.trim(), selectedKind());
+    var f = newFile(name, $('newLocation').value.trim(), $('newRack').value.trim(), selectedKind());
     save(); closeNew();
     go('#/f/' + encodeURIComponent(f.id));
   });
@@ -830,6 +870,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   $('video').addEventListener('resize', fitViewport);
   $('btnStill').addEventListener('click', captureStill);
   function backgrounded() {
+    store.flush();
     if (live.running) { stopLive(); setStatus('Camera closed while the app was in the background. Codes not saved were cleared.', 'warn'); }
   }
   document.addEventListener('visibilitychange', function () { if (document.hidden) backgrounded(); });
@@ -840,7 +881,13 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     var v = e.target.value.trim(); if (!v) { e.target.value = f.name; return; }
     f.name = v; touch(f); save(); $('title').textContent = v;
   });
-  $('fSiteIn').addEventListener('change', function (e) { var f = cur(); if (!f) return; f.site = e.target.value.trim(); touch(f); save(); renderFile(); });
+  $('fLocation').addEventListener('change', function (e) { var f = cur(); if (!f) return; f.location = e.target.value.trim(); touch(f); save(); renderFile(); });
+  $('fRack').addEventListener('change', function (e) { var f = cur(); if (!f) return; f.rack = e.target.value.trim(); touch(f); save(); renderFile(); });
+  $('devFilter').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-filter]'); if (!b) return;
+    listFilter = b.dataset.filter; renderFile();
+  });
+  $('autoSave').addEventListener('change', function (e) { state.autoSave = e.target.checked; save(); });
   $('btnDelFile').addEventListener('click', function (e) {
     var f = cur(); if (!f) return;
     twoStep(e.target, 'delfile', 'Delete this file', function () {
@@ -981,8 +1028,14 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     setTimeout(function () { if (b.isConnected && b.classList.contains('armed')) { b.classList.remove('armed'); b.innerHTML = TRASH; } }, 3000);
   });
   $('btnDelAll').addEventListener('click', function (e) {
-    twoStep(e.target, 'delall', 'Delete all files', function () {
-      var n = state.files.length; state.files = []; save(); renderHome(); setStatus(plural(n, 'file') + ' deleted.');
+    twoStep(e.target, 'delall', 'Delete all data', async function () {
+      var n = state.files.length;
+      state.files = []; state.assetRe = Core.DEFAULT_ASSET_RE; state.autoSave = false; delete state.zoom;
+      state.exp = { format: 'xlsx', preset: 'full', custom: null, macStyle: 'colons', apSerial: 'cisco' };
+      clearUndo();
+      await store.clear();
+      $('assetRe').value = state.assetRe; $('autoSave').checked = false;
+      renderHome(); setStatus('All data deleted from this phone (' + plural(n, 'file') + ' and settings).');
     });
   });
 
@@ -992,8 +1045,14 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   fetch('data/oui-cisco.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
     oui = ouiSets(j); if (route.view === 'file') renderFile();
   }).catch(function () { oui = null; });
-  load();
-  $('assetRe').value = state.assetRe;
-  onRoute();
-  initScanner();
+  (async function boot() {
+    var kind = await store.open();
+    await load();
+    $('assetRe').value = state.assetRe;
+    $('autoSave').checked = state.autoSave;
+    $('storageNote').textContent = kind === 'indexeddb' ? 'Saved on this phone in the browser database (IndexedDB).' :
+      kind === 'localstorage' ? 'This browser has no IndexedDB here, so files are kept in its smaller local storage.' : 'This browser cannot store files here; export before closing.';
+    onRoute();
+    initScanner();
+  })();
 })();
