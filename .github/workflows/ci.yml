@@ -20,10 +20,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Build fake-camera video fixtures (ffmpeg)
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+          python3 -m pip install --quiet numpy pillow
+          npm run fixtures:video
       - name: Unit and golden-image tests
         run: npm test
-      - name: Install ffmpeg (fake-camera video fixtures)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Install Chromium for Playwright
         run: npx playwright install --with-deps chromium
       - name: Browser tests (Chromium, fake camera)

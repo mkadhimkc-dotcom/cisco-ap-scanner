@@ -92,28 +92,43 @@ export function regionCovered(r, boxes) {
 }
 
 /* Rotation + zoom sweep over one region. onFound(list) gets raw decoder results (positions dropped:
-   they are in the transformed image). Stops early once the region yields a code. */
+   they are in the transformed image). With stopOnHit, stops at the first transform that decodes.
+   Returns {found, hit: {deg, scale} | null} (hit = first transform that decoded). */
 export async function sweepRegion(img, r, sweeps, decode, onFound, onStep, onError, stopOnHit = false) {
-  let gray, stretch;
-  try {
-    const sub = crop(img, r.x, r.y, r.w, r.h);
-    gray = { g: grayOf(sub), width: sub.width, height: sub.height };
-    stretch = grayStretch(gray.g);
-  } catch (e) { if (onError) onError(e); return 0; }
-  const long = Math.max(gray.width, gray.height);
-  let found = 0;
+  const prep = prepRegion(img, r, onError);
+  if (!prep) return { found: 0, hit: null };
+  const long = Math.max(prep.gray.width, prep.gray.height);
+  let found = 0, hit = null;
   for (const sw of sweeps) {
     if (long > sw.max) { for (let i = 0; i < sw.offs.length; i++) onStep && onStep(); continue; }
     const scale = Math.max(1, Math.min(sw.s, 2400 / long));
     for (const off of sw.offs) {
       await tick();
-      try {
-        const list = (await decode(transformGray(gray, (r.orient === 'v' ? 90 : 0) + r.fix + off, scale, stretch))).map(x => ({ format: x.format, text: x.text }));
-        if (list.length) { found += list.length; onFound(list); }
-      } catch (e) { if (onError) onError(e); }
+      const deg = (r.orient === 'v' ? 90 : 0) + r.fix + off;
+      const n = await decodeTransformed(prep, deg, scale, decode, onFound, onError);
+      if (n && !hit) hit = { deg, scale };
+      found += n;
       if (onStep) onStep();
-      if (stopOnHit && found) return found;
+      if (stopOnHit && found) return { found, hit };
     }
   }
-  return found;
+  return { found, hit };
+}
+
+/* Grayscale crop + contrast stretch of a region, ready for transformGray. */
+export function prepRegion(img, r, onError) {
+  try {
+    const sub = crop(img, r.x, r.y, r.w, r.h);
+    const gray = { g: grayOf(sub), width: sub.width, height: sub.height };
+    return { gray, stretch: grayStretch(gray.g) };
+  } catch (e) { if (onError) onError(e); return null; }
+}
+
+/* One decode of a region at a given angle and zoom. Returns how many codes it read. */
+export async function decodeTransformed(prep, deg, scale, decode, onFound, onError) {
+  try {
+    const list = (await decode(transformGray(prep.gray, deg, scale, prep.stretch))).map(x => ({ format: x.format, text: x.text }));
+    if (list.length) onFound(list);
+    return list.length;
+  } catch (e) { if (onError) onError(e); return 0; }
 }

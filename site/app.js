@@ -3,7 +3,8 @@ import { scanImage } from './src/scan.js';
 import { classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_LABEL, TYPES, EXPECTED, DEFAULT_ASSET_RE } from './src/classify.js';
 import { buildDevice, mergeDevice } from './src/device.js';
 import { csvCell } from './src/csv.js';
-import { createDecoder } from './src/decoder.js';
+import { Scanner } from './src/scanner.js';
+import * as Cam from './src/camera.js';
 import { Xlsx } from './src/xlsx.js';
 
 const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_LABEL, TYPES, EXPECTED, DEFAULT_ASSET_RE, buildDevice, mergeDevice, csvCell };
@@ -38,7 +39,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     files: [], assetRe: Core.DEFAULT_ASSET_RE,
     exp: { format: 'xlsx', preset: 'full', custom: null, macStyle: 'colons', apSerial: 'cisco' }
   };
-  var busy = false, targetId = null, decodeFn = null, route = { view: 'home' }, entryLevel = null;
+  var busy = false, targetId = null, scanner = null, route = { view: 'home' }, entryLevel = null;
 
   /* ---------- storage ---------- */
   function load() {
@@ -121,12 +122,15 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   function touch(f) { f.updated = stamp(new Date()); }
 
   /* ---------- decoder ---------- */
-  async function initDecoder() {
+  async function initScanner() {
     try {
-      decodeFn = await createDecoder({ wasmUrl: new URL('vendor/zxing-wasm/reader/zxing_reader.wasm', document.baseURI).href });
+      scanner = await Scanner.create({
+        wasmUrl: new URL('vendor/zxing-wasm/reader/zxing_reader.wasm', document.baseURI).href,
+        workerUrl: new URL('src/worker.js', document.baseURI).href
+      });
       setPill('Ready', 'ok');
     } catch (e) {
-      decodeFn = null;
+      scanner = null;
       setPill('Scanner offline', 'bad');
       setStatus('The barcode decoder could not load (' + (e && e.message || 'unknown error') + '). You can still add devices by hand.', 'bad');
     }
@@ -166,86 +170,157 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
      blank and nothing is read until a code identifying a different device appears; from then on the new device
      fills in from scratch, and codes carrying the saved device's values are still ignored until the next save,
      so the label still in view is neither read as a duplicate of itself nor leaks into the next device. */
-  var live = { stream: null, track: null, running: false, codes: new Map(), target: null, frames: 0, canvas: null, justSaved: null };
+  var live = { stream: null, track: null, caps: {}, running: false, codes: new Map(), target: null, frames: 0, justSaved: null,
+    boxes: [], reading: false, steady: true, focusNoted: false };
 
   async function startLive(tid) {
     var f = cur();
-    if (!f || live.running || !decodeFn) return;
+    if (!f || live.running || !scanner) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setStatus('This browser cannot open the camera here. Open the app from its https:// address in Safari, or use Take photo.', 'bad');
       return;
     }
-    live.target = tid || null; live.codes = new Map(); live.frames = 0; live.justSaved = null;
+    live.target = tid || null; live.codes = new Map(); live.frames = 0; live.justSaved = null; live.boxes = []; live.steady = true;
+    scanner.reset();
     $('liveTitle').textContent = live.target ? 'Adding to device #' + num(f, findRow(f, live.target)) : 'Live scan';
     $('scanPanel').hidden = true; $('livePanel').hidden = false; $('bottomBar').hidden = true;
     $('liveMsg').textContent = 'Starting camera…'; setStatus('');
     renderLive();
     $('livePanel').scrollIntoView({ block: 'start', behavior: 'smooth' });
-    try {
-      live.stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
-      });
-    } catch (e) {
+    var cam;
+    try { cam = await Cam.openCamera(); } catch (e) {
       closeLivePanel();
       var n = e && e.name;
       setStatus(n === 'NotAllowedError' ? 'Camera access was blocked. Allow the camera for this site in Settings, Safari, Camera, then try again.' :
         n === 'NotFoundError' ? 'No camera found on this device.' : 'Could not open the camera (' + (e && e.message || n || 'error') + ').', 'bad');
       return;
     }
-    if (route.view !== 'file') { live.stream.getTracks().forEach(function (t) { t.stop(); }); live.stream = null; closeLivePanel(); return; }
+    if (route.view !== 'file' || $('livePanel').hidden) { Cam.stopStream(cam.stream); closeLivePanel(); return; }
+    live.stream = cam.stream; live.track = cam.track; live.caps = cam.caps || {};
     var v = $('video');
     v.srcObject = live.stream;
     try { await v.play(); } catch (e) {}
-    live.track = live.stream.getVideoTracks()[0];
+    fitViewport();
     setupCamControls();
     live.running = true;
     liveLoop();
   }
 
+  /* Preview takes the stream's own shape (portrait on a phone held upright, landscape otherwise), so the
+     guide box covers what the camera actually sees. Tall portrait streams are capped by max-height. */
+  function fitViewport() {
+    var v = $('video');
+    if (v.videoWidth && v.videoHeight) $('viewport').style.aspectRatio = v.videoWidth + ' / ' + v.videoHeight;
+  }
+
   function setupCamControls() {
-    var caps = {};
-    try { caps = live.track.getCapabilities ? live.track.getCapabilities() : {}; } catch (e) {}
-    try { if (caps.focusMode && caps.focusMode.indexOf('continuous') >= 0) live.track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () {}); } catch (e) {}
+    var caps = live.caps, z = $('zoom'), zr = Cam.zoomRange(caps);
+    Cam.continuousFocus(live.track, caps);
     $('btnTorch').hidden = !caps.torch; $('btnTorch').dataset.on = ''; $('btnTorch').textContent = 'Light';
-    if (caps.zoom && caps.zoom.max > caps.zoom.min) {
-      var z = $('zoom'); z.min = caps.zoom.min; z.max = Math.min(caps.zoom.max, 6); z.step = caps.zoom.step || 0.1;
-      var c = (live.track.getSettings && live.track.getSettings().zoom) || caps.zoom.min; z.value = c;
-      $('zoomWrap').hidden = false;
-    } else $('zoomWrap').hidden = true;
+    if (zr) {
+      var start = Math.min(zr.max, Math.max(zr.min, state.zoom || Cam.DEFAULT_ZOOM));
+      z.disabled = false; z.min = zr.min; z.max = zr.max; z.step = zr.step; z.value = start;
+      Cam.applyZoom(live.track, start);
+    } else { z.disabled = true; z.min = 1; z.max = 1; z.value = 1; }
+    $('zoomVal').textContent = zr ? Number(z.value).toFixed(1) + '×' : 'n/a';
+    $('zoomNote').hidden = !!zr;
+    var still = Cam.hasImageCapture();
+    $('btnStill').textContent = still ? 'Full-res still' : 'Take photo';
+    $('stillHint').textContent = still ? 'Full-res still takes one sharp picture with the camera that is already open, for the tiny PID and Meraki barcodes.'
+      : 'This browser cannot take a full-resolution still from the live view (iPhone Safari cannot). Take photo opens the camera app instead: one 12 MP shot that reads the tiny barcodes better. Its codes are added to the device you are scanning.';
   }
 
   async function liveLoop() {
     var v = $('video');
-    if (!live.canvas) live.canvas = document.createElement('canvas');
-    var ctx = live.canvas.getContext('2d', { willReadFrequently: true });
     while (live.running) {
       if (v.readyState < 2 || !v.videoWidth) { await sleep(100); continue; }
-      var vw = v.videoWidth, vh = v.videoHeight, k = Math.min(1, 1920 / Math.max(vw, vh));
-      var cw = Math.round(vw * k), ch = Math.round(vh * k);
-      if (live.canvas.width !== cw || live.canvas.height !== ch) { live.canvas.width = cw; live.canvas.height = ch; }
-      ctx.drawImage(v, 0, 0, cw, ch);
-      var img = ctx.getImageData(0, 0, cw, ch);
-      var list = [];
-      try { list = await Core.scanImage({ data: img.data, width: cw, height: ch }, decodeFn, { noTiles: true }); } catch (e) {}
+      var rect = Cam.guideRect(v, $('viewport'), $('guide'));
+      if (rect.w < 16 || rect.h < 16) { await sleep(100); continue; }
+      setReading(true);
+      var res = null;
+      try { res = await scanner.frame(await Cam.grabCrop(v, rect, scanner.grabMode)); } catch (e) { res = null; }
       if (!live.running) break;
       live.frames++;
-      var fresh = false, js = live.justSaved;
-      if (js) {
-        var cls = list.map(function (c) { return { c: c, hits: classifyCode(c) }; });
-        if (!js.started) js.started = cls.some(function (x) { return x.hits.some(function (h) { return DUP_FIELDS.indexOf(h.field) >= 0 && !js.vals.has(dupKey(h.field, h.value)); }); });
-        list = !js.started ? [] : cls.filter(function (x) {
-          return !x.hits.some(function (h) { return DUP_FIELDS.indexOf(h.field) >= 0 && js.vals.has(dupKey(h.field, h.value)); });
-        }).map(function (x) { return x.c; });
+      if (res) {
+        live.steady = res.steady;
+        var kx = rect.w / res.width, ky = rect.h / res.height, now = performance.now();
+        res.codes.forEach(function (c) {
+          if (c.pos) live.boxes.push({ t: now, pts: c.pos.map(function (p) { return { x: rect.x + p.x * kx, y: rect.y + p.y * ky }; }) });
+        });
+        addLiveCodes(res.codes);
       }
-      list.forEach(function (c) {
-        var key = c.format + '|' + c.text, h = live.codes.get(key);
-        if (h) h.count += c.count; else { live.codes.set(key, { format: c.format, text: c.text, count: c.count }); fresh = true; }
-      });
-      if (fresh) flash();
-      renderLive();
-      await sleep(50);
+      setReading(false);
+      renderLive(); drawOverlay();
+      // no queue: the next frame is grabbed only after this one is done
+      await nextFrame();
     }
+  }
+
+  /* One read per code per frame (or per still), so a field's vote count is the number of frames that read it. */
+  function addLiveCodes(list) {
+    var fresh = false, js = live.justSaved;
+    if (js) {
+      var cls = list.map(function (c) { return { c: c, hits: classifyCode(c) }; });
+      if (!js.started) js.started = cls.some(function (x) { return x.hits.some(function (h) { return DUP_FIELDS.indexOf(h.field) >= 0 && !js.vals.has(dupKey(h.field, h.value)); }); });
+      list = !js.started ? [] : cls.filter(function (x) {
+        return !x.hits.some(function (h) { return DUP_FIELDS.indexOf(h.field) >= 0 && js.vals.has(dupKey(h.field, h.value)); });
+      }).map(function (x) { return x.c; });
+    }
+    var seen = {};
+    list.forEach(function (c) {
+      var key = c.format + '|' + c.text; if (seen[key]) return; seen[key] = 1;
+      var h = live.codes.get(key);
+      if (h) h.count += 1; else { live.codes.set(key, { format: c.format, text: c.text, count: 1 }); fresh = true; }
+    });
+    if (fresh) flash();
+  }
+
+  function setReading(on) {
+    live.reading = on;
+    var el = $('liveState');
+    el.textContent = on ? 'Reading…' : live.steady ? 'Ready' : 'Hold steady';
+    el.dataset.kind = on ? 'busy' : live.steady ? 'ok' : 'warn';
+  }
+
+  /* Green boxes over each barcode as it is read; they fade after a second so the user sees what is left. */
+  function drawOverlay() {
+    var c = $('overlay'), vp = $('viewport'), v = $('video');
+    var r = vp.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    var w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    var ctx = c.getContext('2d'); ctx.clearRect(0, 0, w, h);
+    if (!v.videoWidth) return;
+    var m = Cam.coverMap(v.videoWidth, v.videoHeight, r.width, r.height), now = performance.now();
+    live.boxes = live.boxes.filter(function (b) { return now - b.t < 1200; });
+    ctx.lineWidth = 3 * dpr; ctx.lineJoin = 'round';
+    live.boxes.forEach(function (b) {
+      ctx.strokeStyle = 'rgba(34,197,94,' + (1 - (now - b.t) / 1400).toFixed(2) + ')';
+      ctx.beginPath();
+      b.pts.forEach(function (p, i) { var x = (p.x * m.scale - m.ox) * dpr, y = (p.y * m.scale - m.oy) * dpr; if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+      ctx.closePath(); ctx.stroke();
+    });
+  }
+
+  async function tapFocus(e) {
+    if (!live.running || !live.track || e.target.closest('button')) return;
+    var v = $('video'), r = $('viewport').getBoundingClientRect();
+    var m = Cam.coverMap(v.videoWidth, v.videoHeight, r.width, r.height);
+    var sx = (e.clientX - r.left + m.ox) / m.scale, sy = (e.clientY - r.top + m.oy) / m.scale;
+    var ring = $('focusRing');
+    ring.style.left = (e.clientX - r.left) + 'px'; ring.style.top = (e.clientY - r.top) + 'px';
+    ring.classList.remove('on'); void ring.offsetWidth; ring.classList.add('on');
+    var ok = await Cam.focusAt(live.track, live.caps, Math.min(1, Math.max(0, sx / v.videoWidth)), Math.min(1, Math.max(0, sy / v.videoHeight)));
+    if (!ok && !live.focusNoted) { live.focusNoted = true; setStatus('Tap to focus is not available in this browser. Move the phone back a little and it refocuses on its own.', 'warn'); }
+  }
+
+  async function captureStill() {
+    if (!live.running) return;
+    if (!Cam.hasImageCapture()) { targetId = 'live'; $('inCam').click(); return; }
+    setReading(true);
+    var blob = await Cam.takeStill(live.track);
+    if (!blob) { setReading(false); targetId = 'live'; $('inCam').click(); return; }
+    try { addLiveCodes(await scanner.photo(blob)); } catch (e) { setStatus('Could not read that still (' + (e && e.message || 'error') + ').', 'warn'); }
+    setReading(false); renderLive();
   }
 
   function classifyCode(c) { try { return Core.classify(c, { assetRe: state.assetRe }) || []; } catch (e) { return []; } }
@@ -257,6 +332,8 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   }
 
   function liveDevice() { return Core.buildDevice(Array.from(live.codes.values()), { assetRe: state.assetRe }); }
+  /* confirmed = two or more agreeing reads, or the serial cross-checked against the Data Matrix */
+  function confirmedField(dev, k) { return !!dev[k] && ((dev.votes[k] || 0) >= 2 || (k === 'serial' && dev.serialAgrees)); }
 
   function renderLive() {
     var f = cur(); if (!f) return;
@@ -272,8 +349,10 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     ldups.forEach(function (d) { dupBy[d.k] = d.where; });
     $('found').innerHTML = shown.map(function (k) {
       var val = dev[k] || (row && row[k] ? row[k] + ' (already saved)' : '');
-      var cls = dev[k] ? (dupBy[k] ? 'got dup' : 'got') : 'miss';
-      return '<li class="' + cls + '"><span class="k">' + esc(Core.FIELD_LABEL[k]) + '</span><span class="v">' + esc(val || 'not yet') +
+      var conf = confirmedField(dev, k);
+      var cls = dev[k] ? (dupBy[k] ? 'got dup' : conf ? 'got' : 'single') : 'miss';
+      return '<li class="' + cls + '" data-field="' + k + '"><span class="k">' + esc(Core.FIELD_LABEL[k]) + '</span><span class="v">' + esc(val || 'not yet') +
+        (dev[k] && !conf && !dupBy[k] ? '<em class="once">Read once, confirming…</em>' : '') +
         (dev[k] && dupBy[k] ? '<em>Already scanned: ' + esc(dupBy[k].join(', ')) + '</em>' : '') + '</span></li>';
     }).join('');
     var missing = exp.filter(function (k) { return !dev[k] && !(row && row[k]); }).length;
@@ -281,6 +360,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     $('liveMsg').textContent = !live.running ? 'Starting camera…' :
       ldups.length ? 'Duplicate: this device looks already scanned (' + ldups[0].where.join(', ') + '). Check before saving.' :
       live.justSaved && !live.justSaved.started ? 'Saved as #' + live.justSaved.n + '. Point at the next device.' :
+      !live.steady ? 'Hold steady…' :
       !live.codes.size ? (live.frames > 6 ? 'No barcodes yet. Move closer and hold steady.' : 'Looking for barcodes…') :
       missing ? 'Reading… ' + plural(missing, 'field') + ' to go. Move slowly along the label.' : 'All expected fields read. Tap Save device.';
     var waiting = live.justSaved && !live.justSaved.started;
@@ -303,13 +383,14 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       n: num(f, row), started: false,
       vals: new Set(DUP_FIELDS.map(function (k) { return dupKey(k, row[k]); }).filter(Boolean))
     } : null;
-    live.codes = new Map(); live.frames = 0;
+    live.codes = new Map(); live.frames = 0; live.boxes = [];
+    scanner.reset();
     if (tid) stopLive(); else renderLive();
   }
 
   function stopLive() {
     live.running = false;
-    if (live.stream) live.stream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+    Cam.stopStream(live.stream);
     live.stream = null; live.track = null;
     var v = $('video'); try { v.pause(); } catch (e) {} v.srcObject = null;
     closeLivePanel();
@@ -334,29 +415,38 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       return { data: d.data, width: cw, height: ch };
     } finally { URL.revokeObjectURL(url); }
   }
+  /* Photo -> codes, decoded in the worker (from the file itself when it can, else from pixels made here). */
+  async function photoCodes(file, onProgress) {
+    if (scanner.inWorker && scanner.bitmaps) return scanner.photo(file, onProgress);
+    return scanner.photo(await fileToImg(file), onProgress);
+  }
+  async function addPhotoToLive(file) {
+    targetId = null;
+    if (!file) return;
+    setReading(true); $('liveMsg').textContent = 'Reading the photo…';
+    try { addLiveCodes(await photoCodes(file)); } catch (e) { setStatus('Could not read that photo.', 'warn'); }
+    setReading(false); renderLive();
+  }
   function showProgress(text, frac) { $('progress').hidden = false; $('progressText').textContent = text; $('progressBar').style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%'; }
   function hideProgress() { $('progress').hidden = true; $('progressBar').style.width = '0'; }
   function setBusy(b) {
     busy = b;
-    var off = b || !decodeFn;
+    var off = b || !scanner;
     ['btnLive', 'btnCam', 'btnLib'].forEach(function (id) { $(id).disabled = off; });
     document.querySelectorAll('[data-act="live"],[data-act="photo"]').forEach(function (x) { x.disabled = off; });
   }
 
   async function handleFiles(files, tid) {
     var f = cur();
-    if (!f || !files || !files.length || !decodeFn || busy) return;
+    if (!f || !files || !files.length || !scanner || busy) return;
+    if (tid === 'live') return addPhotoToLive(files[0]);
     setBusy(true); setStatus('');
     var lastRow = null, added = 0, empty = 0, failed = 0;
     for (var i = 0; i < files.length; i++) {
       var label = 'Photo' + (files.length > 1 ? ' ' + (i + 1) + ' of ' + files.length : '');
       try {
         showProgress(label + ': opening…', 0); await nextFrame();
-        var img = await fileToImg(files[i]);
-        var codes = await Core.scanImage(img, decodeFn, {
-          onProgress: function (d, t, n) { showProgress(label + ': reading · ' + plural(n, 'code') + ' found', d / t); }
-        });
-        img = null;
+        var codes = await photoCodes(files[i], function (d, t, n) { showProgress(label + ': reading · ' + plural(n, 'code') + ' found', d / t); });
         var row = ingest(f, codes, tid);
         if (!row) { empty++; continue; }
         if (!tid) added++;
@@ -658,14 +748,23 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   $('btnTorch').addEventListener('click', function () {
     var on = !this.dataset.on; this.dataset.on = on ? '1' : '';
     this.textContent = on ? 'Light off' : 'Light';
-    if (live.track) live.track.applyConstraints({ advanced: [{ torch: on }] }).catch(function () {});
+    this.setAttribute('aria-pressed', String(on));
+    if (live.track) Cam.setTorch(live.track, on);
   });
   $('zoom').addEventListener('input', function () {
-    if (live.track) live.track.applyConstraints({ advanced: [{ zoom: Number(this.value) }] }).catch(function () {});
+    var z = Number(this.value);
+    $('zoomVal').textContent = z.toFixed(1) + '×';
+    state.zoom = z; save();
+    if (live.track) Cam.applyZoom(live.track, z);
   });
-  document.addEventListener('visibilitychange', function () {
-    if (document.hidden && live.running) { stopLive(); setStatus('Camera closed while the app was in the background. Codes not saved were cleared.', 'warn'); }
-  });
+  $('viewport').addEventListener('click', tapFocus);
+  $('video').addEventListener('resize', fitViewport);
+  $('btnStill').addEventListener('click', captureStill);
+  function backgrounded() {
+    if (live.running) { stopLive(); setStatus('Camera closed while the app was in the background. Codes not saved were cleared.', 'warn'); }
+  }
+  document.addEventListener('visibilitychange', function () { if (document.hidden) backgrounded(); });
+  window.addEventListener('pagehide', backgrounded);
 
   $('fName').addEventListener('change', function (e) {
     var f = cur(); if (!f) return;
@@ -759,5 +858,5 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   load();
   $('assetRe').value = state.assetRe;
   onRoute();
-  initDecoder();
+  initScanner();
 })();

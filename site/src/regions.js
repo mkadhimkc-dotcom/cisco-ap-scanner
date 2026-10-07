@@ -28,11 +28,14 @@ export function findBarcodeRegions(img, opts) {
     for (let i = 0; i < nb; i++) {
       mask[i] = orient === 'h' ? (ex[i] > T && ey[i] < ratio * ex[i]) : (ey[i] > T && ex[i] < ratio * ey[i]);
     }
-    const dm = new Uint8Array(nb);
+    // Dilate along the barcode's length only (x for vertical bars, y for horizontal bars): this bridges the
+    // gaps inside one symbol but keeps barcodes stacked on a label (separated by a line of text) apart.
+    const dm = new Uint8Array(nb), along = opts.dilate === 'both' ? null : orient;
+    const rx = along === 'v' ? 0 : 1, ry = along === 'h' ? 0 : 1;
     for (let by = 0; by < bh; by++) for (let bx = 0; bx < bw; bx++) {
       if (!mask[by * bw + bx]) continue;
-      for (let yy = Math.max(0, by - 1); yy <= Math.min(bh - 1, by + 1); yy++)
-        for (let xx = Math.max(0, bx - 1); xx <= Math.min(bw - 1, bx + 1); xx++) dm[yy * bw + xx] = 1;
+      for (let yy = Math.max(0, by - ry); yy <= Math.min(bh - 1, by + ry); yy++)
+        for (let xx = Math.max(0, bx - rx); xx <= Math.min(bw - 1, bx + rx); xx++) dm[yy * bw + xx] = 1;
     }
     const seen = new Uint8Array(nb);
     for (let s0 = 0; s0 < nb; s0++) {
@@ -50,17 +53,58 @@ export function findBarcodeRegions(img, opts) {
         if (cy > 0 && dm[cur - bw] && !seen[cur - bw]) { seen[cur - bw] = 1; stack.push(cur - bw); }
         if (cy < bh - 1 && dm[cur + bw] && !seen[cur + bw]) { seen[cur + bw] = 1; stack.push(cur + bw); }
       }
-      const spanX = maxX - minX + 1, spanY = maxY - minY + 1;
-      const major = orient === 'h' ? spanX : spanY, minor = orient === 'h' ? spanY : spanX;
-      if (n < (opts.minBlocks || 20) || major < 10 || minor < 2) continue;
-      const pad = Math.max(2 * B, 0.1 * Math.max(spanX, spanY) * B);
-      const x0 = Math.max(0, (minX * B - pad) / fb), y0 = Math.max(0, (minY * B - pad) / fb);
-      const x1 = Math.min(img.width, ((maxX + 1) * B + pad) / fb), y1 = Math.min(img.height, ((maxY + 1) * B + pad) / fb);
-      regions.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0, orient, n, pts, fix: estimateFix(g, W, B, blocks, orient) });
+      for (const part of splitStack(blocks, orient)) {
+        const r = makeRegion(part, orient, B, fb, img, g, W, opts);
+        if (r) regions.push(r);
+      }
     }
   }
   regions.sort((a, b) => b.n - a.n);
   return regions.slice(0, opts.maxRegions || 6);
+}
+
+/* Bounding box, padding and tilt for one group of stripe blocks; null when too small to be a barcode. */
+function makeRegion(blocks, orient, B, fb, img, g, W, opts) {
+  let minX = Infinity, maxX = -1, minY = Infinity, maxY = -1;
+  const pts = [];
+  for (let k = 0; k < blocks.length; k += 2) {
+    const cx = blocks[k], cy = blocks[k + 1];
+    pts.push([(cx + 0.5) * B / fb, (cy + 0.5) * B / fb]);
+    if (cx < minX) minX = cx; if (cx > maxX) maxX = cx; if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+  }
+  const n = pts.length, spanX = maxX - minX + 1, spanY = maxY - minY + 1;
+  const major = orient === 'h' ? spanX : spanY, minor = orient === 'h' ? spanY : spanX;
+  if (n < (opts.minBlocks || 20) || major < 10 || minor < 2) return null;
+  const pad = Math.max(2 * B, 0.1 * Math.max(spanX, spanY) * B);
+  const x0 = Math.max(0, (minX * B - pad) / fb), y0 = Math.max(0, (minY * B - pad) / fb);
+  const x1 = Math.min(img.width, ((maxX + 1) * B + pad) / fb), y1 = Math.min(img.height, ((maxY + 1) * B + pad) / fb);
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, orient, n, pts, fix: estimateFix(g, W, B, blocks, orient) };
+}
+
+/* A label carries several barcodes stacked across their bars; small text between them can join them into one
+   group. Split the group into bands where a row (across the bars) holds few stripe blocks. */
+export function splitStack(blocks, orient) {
+  const across = orient === 'h' ? 1 : 0;   // h: bars vertical, symbols stack in y
+  const counts = new Map();
+  for (let k = 0; k < blocks.length; k += 2) { const r = blocks[k + across]; counts.set(r, (counts.get(r) || 0) + 1); }
+  const rows = [...counts.keys()].sort((a, b) => a - b);
+  if (rows.length < 6) return [blocks];
+  const sorted = [...counts.values()].sort((a, b) => a - b), typical = sorted[Math.floor(sorted.length * 0.75)];
+  const low = Math.max(2, typical * 0.25);
+  const bands = []; let cur = null, prev = null;
+  for (const r of rows) {
+    const strong = counts.get(r) >= low;
+    if (!strong || (prev !== null && r - prev > 1)) { if (cur) bands.push(cur); cur = null; }
+    if (strong) { if (!cur) cur = [r, r]; else cur[1] = r; }
+    prev = r;
+  }
+  if (cur) bands.push(cur);
+  if (bands.length < 2) return [blocks];
+  return bands.map(([a, b]) => {
+    const part = [];
+    for (let k = 0; k < blocks.length; k += 2) { const r = blocks[k + across]; if (r >= a && r <= b) part.push(blocks[k], blocks[k + 1]); }
+    return part;
+  });
 }
 
 /* Angle (degrees, transformGray convention, relative to the 0 or 90 base rotation) that makes the bars

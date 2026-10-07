@@ -155,8 +155,21 @@ dialog.sheet::backdrop { background: rgba(17, 24, 39, 0.35); }
 .live { display: flex; flex-direction: column; gap: 12px; }
 .viewport { position: relative; border-radius: 12px; overflow: hidden; background: #0b0f14; aspect-ratio: 3 / 4; max-height: 62vh; width: 100%; }
 .viewport video { width: 100%; height: 100%; object-fit: cover; display: block; }
-.viewport .guide { position: absolute; inset: 14% 8%; border: 2px solid rgba(255,255,255,0.7); border-radius: 12px; pointer-events: none; box-shadow: 0 0 0 999px rgba(0,0,0,0.18); }
-.viewport .live-msg { position: absolute; left: 10px; right: 10px; bottom: 10px; padding: 8px 12px; border-radius: 10px; background: rgba(255,255,255,0.94); color: var(--ink); font-size: 13px; font-weight: 500; }
+.viewport .guide { position: absolute; inset: 9% 6%; border: 2px solid rgba(255,255,255,0.7); border-radius: 12px; pointer-events: none; box-shadow: 0 0 0 999px rgba(0,0,0,0.18); }
+.viewport .live-msg { position: absolute; left: 8px; right: 8px; bottom: 8px; padding: 5px 10px; border-radius: 8px; line-height: 1.3; font-size: 12.5px !important; background: rgba(255,255,255,0.94); color: var(--ink); font-size: 13px; font-weight: 500; }
+.viewport #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.focus-ring { position: absolute; width: 64px; height: 64px; margin: -32px 0 0 -32px; border: 2px solid #facc15; border-radius: 12px; opacity: 0; pointer-events: none; }
+.focus-ring.on { animation: focusring 0.9s ease-out; }
+@keyframes focusring { 0% { opacity: 1; transform: scale(1.4); } 40% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+.livechips { display: inline-flex; gap: 6px; align-items: center; }
+.state-chip { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 99px; background: var(--ok-soft); color: var(--ok); white-space: nowrap; }
+.state-chip[data-kind="busy"] { background: var(--accent-soft); color: #0a3f80; }
+.state-chip[data-kind="warn"] { background: var(--warn-soft); color: var(--warn); }
+.zoomctl output { min-width: 3.2em; font-variant-numeric: tabular-nums; color: var(--ink); }
+.found li.single { border-color: #f3d39b; background: var(--warn-soft); }
+.found li.single .k::before { content: "\2022  "; color: var(--warn); }
+.found li em.once { color: var(--warn); }
+.viewport { cursor: crosshair; }
 .viewport .flash { position: absolute; inset: 0; border: 4px solid #22c55e; border-radius: 12px; opacity: 0; transition: opacity 0.4s; pointer-events: none; }
 .viewport .flash.on { opacity: 1; transition: none; }
 .camctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -260,7 +273,7 @@ table.prev tr.dup td { background: var(--bad-soft); }
 .expbtns { display: grid; gap: 10px; }
 .settings { display: grid; gap: 12px; margin-top: 10px; }
 .settings .input { font-family: var(--font-data); }
-@media (prefers-reduced-motion: reduce) { .bar > i, .viewport .flash { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .bar > i, .viewport .flash { transition: none; } .focus-ring.on { animation: none; } }
 </style>
 </head>
 <body>
@@ -346,25 +359,30 @@ table.prev tr.dup td { background: var(--bad-soft); }
     <section class="panel live" id="livePanel" hidden aria-label="Live scan">
       <div class="livehead">
         <b id="liveTitle">Live scan</b>
-        <span class="badge" id="liveType">Looking…</span>
+        <span class="livechips"><span class="state-chip" id="liveState" data-kind="ok">Ready</span><span class="badge" id="liveType">Looking…</span></span>
       </div>
-      <div class="viewport">
+      <div class="viewport" id="viewport">
         <video id="video" playsinline muted autoplay></video>
-        <div class="guide"></div>
+        <canvas id="overlay" aria-hidden="true"></canvas>
+        <div class="guide" id="guide"></div>
+        <div class="focus-ring" id="focusRing" aria-hidden="true"></div>
         <div class="flash" id="flash"></div>
-        <div class="live-msg" id="liveMsg">Starting camera…</div>
+        <div class="live-msg" id="liveMsg" aria-live="polite">Starting camera…</div>
       </div>
       <div class="camctl">
-        <label id="zoomWrap" hidden>Zoom <input type="range" id="zoom" min="1" max="1" step="0.1" value="1"></label>
-        <button type="button" class="btn small" id="btnTorch" hidden>Light</button>
+        <label class="zoomctl" for="zoom">Zoom <input type="range" id="zoom" min="1" max="1" step="0.1" value="1"><output id="zoomVal" for="zoom">1.0×</output></label>
+        <button type="button" class="btn small" id="btnTorch" aria-pressed="false" hidden>Light</button>
+        <button type="button" class="btn small" id="btnStill">Take photo</button>
       </div>
+      <p class="hint" id="zoomNote" hidden>This camera does not offer zoom here. Move closer instead.</p>
+      <p class="hint" id="stillHint"></p>
       <ul class="found" id="found"></ul>
       <div class="row3">
         <button type="button" class="btn primary" id="btnSaveDev" disabled>Save device</button>
         <button type="button" class="btn" id="btnResetDev">Start over</button>
         <button type="button" class="btn" id="btnStop">Close</button>
       </div>
-      <p class="hint">Hold the phone 15 to 25 cm from the label, flat to it, without glare. Codes keep adding up while you move along the label. Nothing is saved until you tap Save device.</p>
+      <p class="hint">Hold the phone 15 to 25 cm from the label, flat to it, without glare. Tap the picture to focus. Green boxes show what was read; a field is confirmed after two matching reads. Nothing is saved until you tap Save device.</p>
     </section>
 
     <section id="progress" class="panel" hidden aria-live="polite">

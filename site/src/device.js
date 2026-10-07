@@ -1,7 +1,8 @@
 /* Build a device record from decoded codes, and merge later scans into it. */
 import { FIELD_ORDER, FIELD_LABEL, classify, detectType, unsymbol } from './classify.js';
 
-/* codes -> device record. Majority value wins per field; conflicts become warnings. */
+/* codes -> device record. Majority value wins per field (votes = summed code counts, i.e. frames or passes
+   that read it); conflicts become warnings. */
 export function buildDevice(codes, opts) {
   const votes = {}; const other = [];
   for (const c of codes) {
@@ -12,11 +13,12 @@ export function buildDevice(codes, opts) {
       m.set(h.value, (m.get(h.value) || 0) + c.count);
     }
   }
-  const dev = { assetTag: '', mac: '', serial: '', meraki: '', pid: '', partNo: '', clei: '', type: 'Other', warnings: [], other: other };
+  const dev = { assetTag: '', mac: '', serial: '', meraki: '', pid: '', partNo: '', clei: '', type: 'Other', warnings: [], other: other, votes: {} };
   for (const f of FIELD_ORDER) {
     const m = votes[f]; if (!m) continue;
     const ranked = Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
     dev[f] = ranked[0][0];
+    dev.votes[f] = ranked[0][1];   // reads that agree with the kept value
     if (ranked.length > 1)
       dev.warnings.push(FIELD_LABEL[f] + ': found ' + ranked.map(r => r[0]).join(' and ') + '. Kept ' + ranked[0][0] + '.');
   }
