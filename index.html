@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Label Scanner">
+<meta name="theme-color" content="#0d5f6e">
+<title>Label Scanner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --ground: #ecede8; --panel: #f7f7f3; --ink: #1a201d; --ink-2: #55605a; --line: #cdd1c9;
+  --accent: #0d5f6e; --accent-ink: #ffffff; --accent-soft: #d9e9ea;
+  --ok: #2b7a39; --warn: #8f5200; --warn-bg: #f9ecd0; --bad: #b3261e;
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #111513; --panel: #1a201d; --ink: #e7ebe8; --ink-2: #9ba69f; --line: #2f3834;
+    --accent: #52c4d4; --accent-ink: #04252b; --accent-soft: #17323a;
+    --ok: #74d083; --warn: #f0b550; --warn-bg: #2f2410; --bad: #ff8d84;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--ground); color: var(--ink); font-family: var(--font-ui); font-size: 15px; line-height: 1.45;
+  padding: calc(18px + env(safe-area-inset-top, 0px)) 16px calc(40px + env(safe-area-inset-bottom, 0px));
+}
+main { max-width: 560px; margin-inline: auto; display: flex; flex-direction: column; gap: 16px; }
+h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 12px; font-weight: 600; margin: 0; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.pill { font-size: 12px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--ink-2); background: var(--panel); white-space: nowrap; }
+.pill[data-kind="ok"] { color: var(--ok); border-color: currentColor; }
+.pill[data-kind="warn"] { color: var(--warn); border-color: currentColor; }
+.pill[data-kind="bad"] { color: var(--bad); border-color: currentColor; }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); font-weight: 500; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.btn.big { min-height: 72px; font-size: 16px; flex-direction: column; gap: 4px; padding: 8px 10px; }
+.btn.big small { font-size: 12px; font-weight: 400; opacity: 0.85; }
+.btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+.btn.small { min-height: 36px; padding: 0 12px; font-size: 13px; }
+.btn.danger { color: var(--bad); }
+.btn svg { width: 22px; height: 22px; flex: none; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.hint { color: var(--ink-2); font-size: 13px; margin: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.scan { display: flex; flex-direction: column; gap: 10px; }
+
+/* live camera */
+.live { display: flex; flex-direction: column; gap: 10px; }
+.viewport { position: relative; border-radius: 12px; overflow: hidden; background: #000; aspect-ratio: 3 / 4; max-height: 62vh; width: 100%; }
+.viewport video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.viewport .guide { position: absolute; inset: 14% 8%; border: 2px dashed rgba(255,255,255,0.55); border-radius: 10px; pointer-events: none; }
+.viewport .live-msg { position: absolute; left: 8px; right: 8px; bottom: 8px; padding: 6px 10px; border-radius: 8px; background: rgba(0,0,0,0.6); color: #fff; font-size: 13px; }
+.viewport .flash { position: absolute; inset: 0; border: 4px solid #74d083; border-radius: 12px; opacity: 0; transition: opacity 0.4s; pointer-events: none; }
+.viewport .flash.on { opacity: 1; transition: none; }
+.camctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.camctl label { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink-2); flex: 1; min-width: 160px; }
+.camctl input[type=range] { flex: 1; }
+.found { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.found li { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: 13px; padding: 6px 10px; border-radius: 8px; background: var(--ground); border: 1px solid var(--line); }
+.found li .k { color: var(--ink-2); }
+.found li .v { font-family: var(--font-data); font-size: 14px; overflow-wrap: anywhere; }
+.found li.got { border-color: var(--ok); }
+.found li.got .k::before { content: "\2713  "; color: var(--ok); font-weight: 600; }
+.found li.miss .v { color: var(--ink-2); }
+.livehead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.livehead b { font-size: 15px; }
+
+#progress { display: flex; flex-direction: column; gap: 8px; }
+.bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
+#status { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 14px; }
+#status[data-kind="warn"] { background: var(--warn-bg); color: var(--warn); }
+#status[data-kind="bad"] { background: var(--warn-bg); color: var(--bad); }
+
+.listhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#devices { display: flex; flex-direction: column; gap: 12px; padding: 0; margin: 0; list-style: none; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.card header { display: flex; align-items: center; gap: 10px; }
+.card .num { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.card .model { font-family: var(--font-data); font-weight: 500; font-size: 14px; overflow-wrap: anywhere; min-width: 0; flex: 1; }
+.typesel { min-height: 32px; border-radius: 99px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--ink); padding: 0 10px; font-size: 13px; font-weight: 600; }
+.fields { display: grid; gap: 10px; }
+.field { display: grid; gap: 3px; min-width: 0; }
+.field label { font-size: 12px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; }
+.field label .src { font-size: 11px; }
+.field label .src.scan { color: var(--ok); }
+.field input { width: 100%; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--ground); font-family: var(--font-data); font-size: 16px; }
+.field input::placeholder { color: var(--ink-2); opacity: 0.7; font-family: var(--font-ui); }
+.field.missing input { border-style: dashed; }
+.note-ok { color: var(--ok); font-size: 13px; margin: 0; }
+.warns { margin: 0; padding: 8px 10px; list-style: none; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 13px; display: grid; gap: 4px; }
+details > summary { cursor: pointer; font-size: 13px; color: var(--ink-2); min-height: 32px; display: flex; align-items: center; }
+details.others ul { margin: 6px 0 0; padding-left: 18px; font-family: var(--font-data); font-size: 12px; overflow-wrap: anywhere; }
+.card .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.card .actions .grow { flex: 1; }
+
+.empty p { margin: 0 0 8px; }
+.empty ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+pre.csv { margin: 8px 0 0; padding: 10px; border-radius: 8px; background: var(--ground); border: 1px solid var(--line); font-family: var(--font-data); font-size: 12px; overflow-x: auto; white-space: pre; max-width: 100%; }
+
+.finish { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 4px; }
+.finish span { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+.seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.seg button { border: 0; background: transparent; padding: 10px; min-height: 44px; text-align: left; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.seg .t { font-weight: 600; font-size: 14px; }
+.seg .c { font-family: var(--font-data); font-size: 11px; opacity: 0.85; }
+#exportPanel { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+#exportPanel > * { min-width: 0; }
+.opts { display: grid; gap: 12px; }
+.opts label, .settings label { font-size: 13px; color: var(--ink-2); display: grid; gap: 4px; min-width: 0; }
+.opts select, .settings input { min-height: 46px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--ground); font-size: 16px; width: 100%; }
+.settings { display: grid; gap: 12px; margin-top: 10px; }
+.settings input { font-family: var(--font-data); }
+@media (prefers-reduced-motion: reduce) { .bar > i, .viewport .flash { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <h1>Label Scanner</h1>
+    <span class="pill" id="decoderPill">Loading decoder…</span>
+  </header>
+
+  <section class="panel scan" id="scanPanel" aria-label="Scan">
+    <div class="row2">
+      <button type="button" class="btn primary big" id="btnLive">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8v8M10 8v8M13 8v8M16 8v8"/></svg>
+        Live scan
+        <small>Point at the labels</small>
+      </button>
+      <button type="button" class="btn big" id="btnCam">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+        Take photo
+        <small>One sharp shot</small>
+      </button>
+    </div>
+    <div class="row2">
+      <button type="button" class="btn" id="btnLib">From library</button>
+      <button type="button" class="btn" id="btnManual">Add by hand</button>
+    </div>
+    <p class="hint">Works on Cisco switches and Meraki/Cisco access points. Hold the phone 15 to 25 cm from the label, flat to it, without flash glare. Images are read on this phone and never uploaded or saved.</p>
+    <input type="file" id="inCam" accept="image/*" capture="environment" hidden>
+    <input type="file" id="inLib" accept="image/*" multiple hidden>
+  </section>
+
+  <section class="panel live" id="livePanel" hidden aria-label="Live scan">
+    <div class="livehead">
+      <b id="liveTitle">Live scan</b>
+      <span class="pill" id="liveType">Looking…</span>
+    </div>
+    <div class="viewport">
+      <video id="video" playsinline muted autoplay></video>
+      <div class="guide"></div>
+      <div class="flash" id="flash"></div>
+      <div class="live-msg" id="liveMsg">Starting camera…</div>
+    </div>
+    <div class="camctl" id="camctl">
+      <label id="zoomWrap" hidden>Zoom <input type="range" id="zoom" min="1" max="1" step="0.1" value="1"></label>
+      <button type="button" class="btn small" id="btnTorch" hidden>Light</button>
+    </div>
+    <ul class="found" id="found"></ul>
+    <div class="row3">
+      <button type="button" class="btn primary" id="btnSaveDev" disabled>Save device</button>
+      <button type="button" class="btn" id="btnResetDev">Start over</button>
+      <button type="button" class="btn" id="btnStop">Close camera</button>
+    </div>
+    <p class="hint">Take your time. Codes keep adding up while you move along the label. Nothing is saved until you tap Save device.</p>
+  </section>
+
+  <section id="progress" class="panel" hidden aria-live="polite">
+    <span id="progressText">Reading…</span>
+    <div class="bar"><i id="progressBar"></i></div>
+  </section>
+  <p id="status" role="status" aria-live="polite" hidden></p>
+
+  <section aria-label="Devices" style="display:flex;flex-direction:column;gap:10px">
+    <div class="listhead">
+      <h2 id="devHead">Devices</h2>
+      <button type="button" class="btn small danger" id="btnClear" hidden>Clear all</button>
+    </div>
+    <ul id="devices"></ul>
+    <div class="finish" id="finishBar" hidden>
+      <span id="finishCount">0 devices</span>
+      <button type="button" class="btn" id="btnFinish">Finish and export…</button>
+    </div>
+    <div class="panel empty" id="empty">
+      <p><b>No devices yet.</b></p>
+      <ol>
+        <li>Start a live scan and point at one device's labels.</li>
+        <li>When the fields you need are ticked, tap Save device. Move to the next one.</li>
+        <li>When the closet is done, choose Finish and export.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="exportPanel" class="panel" hidden aria-label="Export">
+    <h2>Export</h2>
+    <div class="seg" role="group" aria-label="CSV template">
+      <button type="button" id="tplFull" aria-pressed="true"><span class="t">All fields</span><span class="c">10 columns</span></button>
+      <button type="button" id="tplShort" aria-pressed="false"><span class="t">Asset, MAC, serial</span><span class="c">3 columns</span></button>
+    </div>
+    <div class="opts">
+      <label for="macStyle">MAC address format
+        <select id="macStyle">
+          <option value="colons">F4:B8:21:88:DE:00</option>
+          <option value="dashes">F4-B8-21-88-DE-00</option>
+          <option value="plain">F4B82188DE00</option>
+          <option value="cisco">f4b8.2188.de00</option>
+        </select>
+      </label>
+      <label for="apSerial">Serial column for access points (short CSV)
+        <select id="apSerial">
+          <option value="cisco">Cisco S/N (FJC…)</option>
+          <option value="meraki">Meraki serial (Q…)</option>
+        </select>
+      </label>
+    </div>
+    <details id="previewBox" open>
+      <summary>Preview</summary>
+      <pre class="csv" id="csvPreview"></pre>
+    </details>
+    <button type="button" class="btn primary" id="btnShare">Email or share CSV</button>
+    <div class="row2">
+      <button type="button" class="btn" id="btnDownload">Download CSV</button>
+      <button type="button" class="btn" id="btnCopy">Copy CSV</button>
+    </div>
+    <p class="hint">Email or share opens the iPhone share sheet with the CSV attached. Pick Mail to email it, or Save to Files.</p>
+    <button type="button" class="btn" id="btnBack">Keep scanning</button>
+  </section>
+
+  <details class="panel">
+    <summary>Settings</summary>
+    <div class="settings">
+      <label for="assetRe">Asset tag pattern (regular expression)
+        <input id="assetRe" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" value="^\d{4,9}$">
+      </label>
+    </div>
+  </details>
+</main>
+
+<script src="vendor/zxing-reader.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

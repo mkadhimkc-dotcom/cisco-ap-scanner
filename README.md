@@ -1,111 +1,39 @@
-# Cisco AP Scanner (Next.js + Vercel)
+# Label Scanner
 
-A production-ready, mobile-first Cisco access point field scanner built for iPhone Safari. It uses the **rear camera** for live barcode/QR scanning, parses Cisco label data in Full mode, stores scans in `localStorage`, exports CSV in-browser, and can email CSV securely via a server-side API route with Resend.
+Phone web app that reads the barcodes on Cisco switch and Cisco/Meraki access point labels and exports them as CSV.
+Everything runs in the browser. Camera frames and photos are never uploaded or stored.
 
-## What this app does
+## Put it on GitHub Pages
 
-- Starts live scan from the phone camera (rear camera preferred).
-- Continuously scans without requiring manual photo capture.
-- Supports **Full** mode (parse PID/SN/MAC/MFG when possible) and **Light** mode (store raw only).
-- Persists data locally (`localStorage`) for v1 (no DB).
-- Exports CSV download.
-- Emails CSV attachment via `POST /api/export-email`.
+1. Create a new GitHub repository (for example `label-scanner`).
+2. Upload everything in this folder to the root of the repo: `index.html`, `app.js`, `core.js`, `.nojekyll`, `README.md` and the `vendor/` folder.
+3. In the repo, open **Settings > Pages**. Under **Build and deployment**, choose **Deploy from a branch**, branch `main`, folder `/ (root)`. Save.
+4. After a minute the site is live at `https://<your-username>.github.io/label-scanner/`.
+5. Open that address in Safari on the iPhone. Tap **Share > Add to Home Screen** to get an app icon.
 
-## Feature summary
+The camera only works over `https://`, which GitHub Pages provides. Opening `index.html` straight from Files will not work.
 
-- iPhone Safari-friendly camera flow (`playsInline`, rear camera preference).
-- Camera status indicator: live / paused / error.
-- Duplicate detection in Full mode by serial or MAC.
-- Manual entry modal with optional overrides.
-- Batch name support.
-- Editable notes per device.
-- Delete individual scans and clear all.
-- Toast notifications.
+## Using it
 
-## Tech stack
+- **Live scan**: point at one device's labels. Fields tick off as they are read. Nothing is saved until you tap **Save device**. The camera stays open for the next device.
+- **Take photo**: one 12 MP shot. Reads small or blurry barcodes better than live scan, because live frames are about 2 MP.
+- **Scan more / Add photo** on a device card adds another scan to that same device, to fill in what was missed.
+- **Finish and export**: pick **All fields** (10 columns) or **Asset, MAC, serial** (3 columns), then **Email or share CSV** (iPhone share sheet with the file attached; choose Mail or Save to Files), **Download CSV** or **Copy CSV**.
 
-- Next.js (App Router) + TypeScript
-- `@zxing/browser` for live scan decoding
-- Resend for secure email sending from server route handlers
-- Vercel-ready deployment
+The device list stays on the phone (browser storage) until you clear it.
 
-## Local development
+## What it reads
 
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-2. Create environment file:
-   ```bash
-   cp .env.local.example .env.local
-   ```
-3. Fill in values in `.env.local`.
-4. Run dev server:
-   ```bash
-   npm run dev
-   ```
-5. Open `http://localhost:3000`.
+| Label | Fields |
+|---|---|
+| Cisco switch (e.g. C9300) | Asset tag, MAC, serial, PID, part number, CLEI (from the Data Matrix) |
+| Meraki/Cisco AP (e.g. CW9166I) | Asset tag, MAC, Cisco S/N, Meraki serial, PID |
 
-## Required environment variables
+The asset tag pattern defaults to 4 to 9 digits and can be changed under **Settings**.
 
-Create `.env.local` with:
+## Files
 
-- `RESEND_API_KEY` – your Resend API key.
-- `MAIL_FROM` – verified sender (e.g. `Field Scanner <scanner@yourdomain.com>`).
-
-## Email export behavior
-
-- Frontend prompts for destination email.
-- Frontend sends `{ to, filename, csv }` to `/api/export-email`.
-- Server route validates payload and env vars.
-- Server sends short professional email with CSV attachment.
-- API keys remain server-side only.
-
-## GitHub setup steps
-
-1. Create a new GitHub repository.
-2. Copy this project into the repo root.
-3. Commit and push:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit: Cisco AP scanner"
-   git branch -M main
-   git remote add origin <your-repo-url>
-   git push -u origin main
-   ```
-
-## Vercel deployment steps
-
-1. Import your GitHub repo in Vercel.
-2. Keep default framework detection (Next.js).
-3. Set environment variables in Vercel project settings:
-   - `RESEND_API_KEY`
-   - `MAIL_FROM`
-4. Deploy.
-5. Open your production URL from iPhone Safari over HTTPS.
-
-## iPhone Safari camera notes
-
-- Rear camera is requested using:
-  ```ts
-  navigator.mediaDevices.getUserMedia({
-    video: { facingMode: { ideal: 'environment' } },
-    audio: false,
-  });
-  ```
-- Video uses `playsInline` to avoid iOS fullscreen takeover.
-- Camera access requires HTTPS in production.
-
-## Troubleshooting camera access
-
-If camera is blocked, users should check:
-
-- iPhone: **Settings → Safari → Camera → Allow**
-- Also ensure Screen Time restrictions are not blocking camera
-- Confirm page is loaded over HTTPS
-- Close and reopen Safari tab after changing permissions
-
-## Data storage note (v1)
-
-This version uses **only `localStorage`** and has **no backend database**. Data is tied to the device/browser profile and can be cleared by browser/site data cleanup.
+- `index.html`: layout and styles
+- `app.js`: camera, photo handling, device list, export
+- `core.js`: image processing (barcode region finder, deskew), label field classification, CSV
+- `vendor/`: [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) 2.2.4 barcode decoder (MIT, see license file)
