@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-version="2.0.0">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -248,6 +248,21 @@ dialog.sheet::backdrop { background: rgba(17, 24, 39, 0.35); }
 .switch input { width: 22px; height: 22px; margin: 2px 0 0; accent-color: var(--accent); flex: none; }
 .switch span { display: grid; gap: 2px; font-size: 14px; color: var(--ink); }
 .switch small { font-size: 12.5px; color: var(--ink-2); }
+.tplrow { display: flex; gap: 8px; align-items: center; }
+.tplrow .select { flex: 1; min-width: 0; }
+.tplrow .btn.small { min-height: 46px; }
+#btnTplNew { justify-self: start; min-height: 44px; padding: 0 4px; }
+.tplcols { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 52vh; overflow-y: auto; }
+.tplcol { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.tplcol.off .tplon span { color: var(--ink-3); }
+.tplon { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; cursor: pointer; min-width: 0; }
+.tplon input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+.tplon span { overflow: hidden; text-overflow: ellipsis; }
+.tplhead { min-height: 44px; font-size: 15px; }
+.tplmove { display: flex; }
+.tplmove .iconbtn { width: 44px; height: 44px; margin: 0; font-size: 18px; }
+.tplmove .iconbtn[disabled] { opacity: 0.3; }
+pre.prevjson { margin: 0; padding: 10px 12px; font-family: var(--font-data); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .note-ok { color: var(--ok); font-size: 13px; margin: 0; }
 .warns { margin: 0; padding: 8px 12px; list-style: none; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 13px; display: grid; gap: 4px; }
 details > summary { cursor: pointer; font-size: 13px; color: var(--ink-2); min-height: 32px; display: flex; align-items: center; }
@@ -451,25 +466,30 @@ table.prev tr.dup td { background: var(--bad-soft); }
       <p class="callout" id="exOnceCallout" hidden></p>
       <p class="callout" id="exCallout" hidden></p>
 
+      <p class="callout bad" id="exMismatch" hidden></p>
+
       <div class="group">
         <span class="h">File format</span>
         <div class="seg" role="group" aria-label="File format">
-          <button type="button" data-fmt="xlsx"><span class="t">Excel</span><span class="c">.xlsx</span></button>
           <button type="button" data-fmt="csv"><span class="t">CSV</span><span class="c">.csv</span></button>
+          <button type="button" data-fmt="xlsx"><span class="t">Excel</span><span class="c">.xlsx</span></button>
+          <button type="button" data-fmt="json"><span class="t">JSON</span><span class="c">for scripts</span></button>
         </div>
+        <p class="hint" id="jsonNote" hidden>JSON holds every field of every device in this file, with confidence and warnings, independent of the column template.</p>
       </div>
 
-      <div class="group">
-        <span class="h">Columns</span>
-        <div class="seg" role="group" aria-label="Column preset">
-          <button type="button" data-preset="full"><span class="t">All fields</span></button>
-          <button type="button" data-preset="short"><span class="t">Asset, MAC, S/N</span></button>
-          <button type="button" data-preset="custom"><span class="t">Custom</span></button>
+      <div class="group" id="tplGroup">
+        <label class="h" for="tplSel">Columns</label>
+        <div class="tplrow">
+          <select class="select" id="tplSel"></select>
+          <button type="button" class="btn small" id="btnTplEdit" hidden>Edit</button>
+          <button type="button" class="btn small danger" id="btnTplDel" hidden>Delete</button>
         </div>
-        <div class="cols" id="colPick" hidden></div>
+        <p class="hint" id="tplHint"></p>
+        <button type="button" class="btn small ghost" id="btnTplNew">+ New template</button>
       </div>
 
-      <div class="opts">
+      <div class="opts" id="exOpts">
         <label class="lbl" for="macStyle">MAC address format
           <select class="select" id="macStyle">
             <option value="colons">F4:B8:21:88:DE:00</option>
@@ -487,12 +507,12 @@ table.prev tr.dup td { background: var(--bad-soft); }
       </div>
 
       <label class="lbl">File name
-        <span class="fname"><input id="exName" type="text" autocomplete="off" spellcheck="false" aria-label="File name"><span id="exExt">.xlsx</span></span>
+        <span class="fname"><input id="exName" type="text" autocomplete="off" spellcheck="false" aria-label="File name"><span id="exExt">.csv</span></span>
       </label>
 
       <div class="group">
         <span class="h" id="prevHead">Preview</span>
-        <div class="tablewrap"><table class="prev" id="prevTable"></table></div>
+        <div class="tablewrap"><table class="prev" id="prevTable"></table><pre class="prevjson" id="prevJson" hidden></pre></div>
       </div>
 
       <div class="expbtns">
@@ -528,6 +548,21 @@ table.prev tr.dup td { background: var(--bad-soft); }
     <h2 id="askTitle"></h2>
     <p class="hint" id="askText"></p>
     <div class="askbtns" id="askBtns"></div>
+  </form>
+</dialog>
+
+<dialog class="sheet" id="dlgTpl" aria-labelledby="tplTitle">
+  <form method="dialog" id="tplForm">
+    <div class="grab"></div>
+    <h2 id="tplTitle">Export template</h2>
+    <label class="lbl" for="tplName">Template name <input class="input" id="tplName" type="text" autocomplete="off"></label>
+    <p class="hint">Tick the columns to export, set their order with the arrows and rename any header.</p>
+    <ul class="tplcols" id="tplCols"></ul>
+    <p class="callout bad" id="tplErr" hidden>Pick at least one column.</p>
+    <div class="actions">
+      <button type="button" class="btn" id="btnTplCancel">Cancel</button>
+      <button type="submit" class="btn primary">Save template</button>
+    </div>
   </form>
 </dialog>
 

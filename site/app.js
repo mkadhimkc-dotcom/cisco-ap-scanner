@@ -8,6 +8,8 @@ import { Scanner } from './src/scanner.js';
 import * as Cam from './src/camera.js';
 import { Xlsx } from './src/xlsx.js';
 import { Store } from './src/store.js';
+import { COLUMNS, COLUMN_KEYS, BUILTIN, allTemplates, findTemplate, newTemplate, cleanTemplate, buildTable, fileJson, exportFileName } from './src/templates.js';
+import { tableToCsv } from './src/csv.js';
 
 const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_LABEL, TYPES, EXPECTED, DEFAULT_ASSET_RE, buildDevice, mergeDevice, csvCell };
 
@@ -17,6 +19,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   var LABEL = Object.assign({ note: 'Note', hwRev: 'Hardware rev' }, Core.FIELD_LABEL);
   var oui = null;   // Cisco/Meraki OUI prefixes, loaded at start (data/oui-cisco.json)
   var store = new Store();
+  var APP_VERSION = document.documentElement.dataset.version || '';
 
   var KIND = {
     AP: { label: 'Access points', one: 'AP' },
@@ -31,16 +34,10 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   var TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
   var CHEV = '<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
 
-  /* export columns, in output order */
-  var COLS = [
-    ['type', 'Type'], ['assetTag', 'Asset Tag'], ['mac', 'MAC Address'], ['serial', 'Serial Number'], ['meraki', 'Meraki Serial'],
-    ['pid', 'Model (PID)'], ['partNo', 'Part Number'], ['clei', 'CLEI'], ['note', 'Note'], ['scannedAt', 'Scanned At'], ['location', 'Location'], ['rack', 'Rack/U'], ['file', 'File'], ['dup', 'Duplicate Of']
-  ];
-  var COL_HEAD = {}; COLS.forEach(function (c) { COL_HEAD[c[0]] = c[1]; });
-
   var state = {
     files: [], assetRe: Core.DEFAULT_ASSET_RE, autoSave: false,
-    exp: { format: 'xlsx', preset: 'full', custom: null, macStyle: 'colons', apSerial: 'cisco' }
+    exp: { format: 'csv', template: 'full', macStyle: 'colons', apSerial: 'cisco' },
+    templates: [], shareNoted: false
   };
   var busy = false, targetId = null, scanner = null, route = { view: 'home' }, entryLevel = null, listFilter = 'all';
 
@@ -53,6 +50,9 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       if (typeof s.autoSave === 'boolean') state.autoSave = s.autoSave;
       if (typeof s.zoom === 'number') state.zoom = s.zoom;
       if (s.exp && typeof s.exp === 'object') Object.assign(state.exp, s.exp);
+      if (Array.isArray(s.templates)) state.templates = s.templates.map(cleanTemplate);
+      state.shareNoted = !!s.shareNoted;
+      if (state.exp.preset) { state.exp.template = state.exp.preset === 'short' ? 'short' : 'full'; delete state.exp.preset; delete state.exp.custom; }
     }
     // files from before Location/Rack existed kept their place in `site`
     var migrated = false;
@@ -677,67 +677,40 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     refreshDups(f); renderStats(f); setBusy(busy);
   }
 
-  /* ---------- export ---------- */
-  function presetCols(f, preset) {
-    if (preset === 'short') return ['assetTag', 'mac', 'serial'];
-    var full = f.kind === 'AP' ? ['assetTag', 'mac', 'serial', 'meraki', 'pid', 'note', 'scannedAt'] :
-      f.kind === 'Switch' ? ['assetTag', 'mac', 'serial', 'pid', 'partNo', 'clei', 'note', 'scannedAt'] :
-      ['type', 'assetTag', 'mac', 'serial', 'meraki', 'pid', 'partNo', 'clei', 'note', 'scannedAt'];
-    if (f.location) full = full.concat(['location']);
-    if (f.rack) full = full.concat(['rack']);
-    if (f.rows.some(function (r) { return dupsOf(f, r).length; })) full = full.concat(['dup']);
-    if (preset === 'custom' && Array.isArray(state.exp.custom)) {
-      var pick = state.exp.custom;
-      return COLS.map(function (c) { return c[0]; }).filter(function (k) { return pick.indexOf(k) >= 0; });
-    }
-    return full;
-  }
+  /* ---------- export (templates in src/templates.js) ---------- */
+  var FMT = { csv: { ext: 'csv', mime: 'text/csv' }, xlsx: { ext: 'xlsx', mime: Xlsx.MIME }, json: { ext: 'json', mime: 'application/json' } };
+  function template() { return findTemplate(state.exp.template, state.templates); }
   function exportTable(f) {
-    var cols = presetCols(f, state.exp.preset), o = state.exp;
-    var merakiSub = o.apSerial === 'meraki' && cols.indexOf('meraki') < 0;
-    var sorted = f.rows, dupRows = [];
-    var rows = sorted.map(function (r, i) {
-      var d = dupsOf(f, r);
-      if (d.length) dupRows.push(i);
-      return cols.map(function (k) {
-        if (k === 'dup') return dupText(d);
-        if (k === 'mac') return r.mac ? Core.formatMac(r.mac, o.macStyle) : '';
-        if (k === 'serial' && merakiSub && r.type === 'AP' && r.meraki) return r.meraki;
-        if (k === 'location') return f.location || '';
-        if (k === 'rack') return f.rack || '';
-        if (k === 'file') return f.name;
-        return r[k] == null ? '' : String(r[k]);
-      });
-    });
-    return { cols: cols, header: cols.map(function (k) { return COL_HEAD[k]; }), rows: rows, dupRows: dupRows };
-  }
-  function toCsv(t) {
-    return [t.header].concat(t.rows).map(function (r) { return r.map(Core.csvCell).join(','); }).join('\r\n') + '\r\n';
+    var t = template();
+    var tab = buildTable(t, f, f.rows, { macStyle: state.exp.macStyle, apSerial: state.exp.apSerial, dupText: function (r) { return dupText(dupsOf(f, r)); } });
+    tab.dupRows = [];
+    f.rows.forEach(function (r, i) { if (dupsOf(f, r).length) tab.dupRows.push(i); });
+    return tab;
   }
   function toTsv(t) {
     return [t.header].concat(t.rows).map(function (r) { return r.map(function (v) { return String(v).replace(/[\t\r\n]+/g, ' '); }).join('\t'); }).join('\n');
   }
-  function safeName(s) { return String(s || '').replace(/[\\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/\s+/g, ' ').trim(); }
-  function exportName(f) {
-    var base = safeName($('exName').value) || safeName(f.name) || 'label-scan';
-    return base + '.' + state.exp.format;
-  }
+  function safeStem(s) { return String(s || '').replace(/[\\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/\s+/g, ' ').trim().replace(/\.(csv|xlsx|json)$/i, ''); }
+  function defaultStem(f) { return exportFileName(f.name, new Date(), 'x').slice(0, -2); }
+  function exportName(f) { return (safeStem($('exName').value) || defaultStem(f)) + '.' + FMT[state.exp.format].ext; }
+  function jsonText(f) { return JSON.stringify(fileJson(f, { app: 'Label Scanner ' + APP_VERSION }), null, 2); }
   function buildFile(f) {
-    var t = exportTable(f), name = exportName(f);
-    if (state.exp.format === 'xlsx') return new File([Xlsx.build(f.name, t.header, t.rows, { highlight: t.dupRows })], name, { type: Xlsx.MIME });
-    return new File([toCsv(t)], name, { type: 'text/csv' });
+    var name = exportName(f), fmt = state.exp.format;
+    if (fmt === 'json') return new File([jsonText(f)], name, { type: FMT.json.mime });
+    var t = exportTable(f);
+    if (fmt === 'xlsx') return new File([Xlsx.build(f.name, t.header, t.rows, { highlight: t.dupRows })], name, { type: Xlsx.MIME });
+    return new File([tableToCsv(t.header, t.rows)], name, { type: FMT.csv.mime });
   }
 
   function openExport() {
     var f = cur(); if (!f) return;
-    var base = safeName(f.name), today = ymd(new Date());
-    $('exName').value = base.indexOf(today) >= 0 ? base : base + ' ' + today;
+    $('exName').value = defaultStem(f);
     $('macStyle').value = state.exp.macStyle; $('apSerial').value = state.exp.apSerial;
     renderExport();
   }
   function renderExport() {
     var f = cur(); if (!f) return;
-    var c = counts(f), o = state.exp;
+    var c = counts(f), o = state.exp, t = template();
     $('exTotal').textContent = c.total; $('exDone').textContent = c.done; $('exMiss').textContent = c.miss; $('exDup').textContent = c.dup;
     var dupList = f.rows.filter(function (r) { return dupsOf(f, r).length; });
     $('exDupCallout').hidden = !dupList.length;
@@ -749,6 +722,9 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     $('exOnceCallout').hidden = !once.length;
     $('exOnceCallout').textContent = once.length ? plural(once.length, 'value') + (once.length === 1 ? ' was' : ' were') + ' read only once (amber dot): ' + once.slice(0, 6).join(', ') +
       (once.length > 6 ? ' and ' + (once.length - 6) + ' more' : '') + '. Check them against the label, or scan again to confirm.' : '';
+    var mism = f.rows.filter(function (r) { return r.serialMismatch; });
+    $('exMismatch').hidden = !mism.length;
+    $('exMismatch').textContent = mism.length ? 'Serial mismatch on ' + mism.map(function (r) { return '#' + num(f, r); }).join(', ') + ': the barcode label and the Data Matrix disagree.' : '';
     var bad = f.rows.filter(function (r) { return missingOf(r).length; });
     var co = $('exCallout');
     co.hidden = !c.total;
@@ -757,23 +733,33 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       plural(bad.length, 'device') + ' missing information: ' + bad.slice(0, 4).map(function (r) { return '#' + num(f, r) + ' (' + missingOf(r).map(function (k) { return Core.FIELD_LABEL[k]; }).join(', ') + ')'; }).join('; ') + (bad.length > 4 ? '; and ' + (bad.length - 4) + ' more.' : '.') + ' You can still export.' :
       'All ' + plural(c.total, 'device') + ' have every expected field.';
     document.querySelectorAll('[data-fmt]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.fmt === o.format)); });
-    document.querySelectorAll('[data-preset]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.preset === o.preset)); });
-    $('exExt').textContent = '.' + o.format;
-    var t = exportTable(f);
-    $('colPick').hidden = o.preset !== 'custom';
-    if (o.preset === 'custom') {
-      $('colPick').innerHTML = COLS.map(function (col) {
-        return '<label><input type="checkbox" value="' + col[0] + '"' + (t.cols.indexOf(col[0]) >= 0 ? ' checked' : '') + '>' + esc(col[1]) + '</label>';
-      }).join('');
-    }
+    $('exExt').textContent = '.' + FMT[o.format].ext;
+    var isJson = o.format === 'json';
+    $('tplGroup').hidden = isJson; $('exOpts').hidden = isJson; $('jsonNote').hidden = !isJson;
+    $('tplSel').innerHTML = allTemplates(state.templates).map(function (x) {
+      return '<option value="' + esc(x.id) + '"' + (x.id === t.id ? ' selected' : '') + '>' + esc(x.name) + (x.builtin ? '' : ' (yours)') + '</option>';
+    }).join('');
+    $('btnTplEdit').hidden = !!t.builtin; $('btnTplDel').hidden = !!t.builtin;
+    $('tplHint').textContent = t.id === 'snipeit' ? 'Snipe-IT: Hardware > Import. The importer maps columns by these header names and lets you change the mapping; MAC Address is a custom field in its default fieldsets. New models also need a Category and Manufacturer, which you can set in the importer.' :
+      t.id === 'full' || t.id === 'short' ? 'Original template, unchanged.' : t.cols.length + ' columns.';
     var hasAP = f.kind === 'AP' || f.rows.some(function (r) { return r.type === 'AP'; });
-    $('apSerialWrap').hidden = !(hasAP && t.cols.indexOf('serial') >= 0 && t.cols.indexOf('meraki') < 0);
-    $('prevHead').textContent = 'Preview · ' + plural(t.rows.length, 'row') + ', ' + plural(t.cols.length, 'column');
-    $('prevTable').innerHTML = !t.cols.length ? '<tr><td class="na">Pick at least one column.</td></tr>' :
-      '<thead><tr>' + t.header.map(function (h) { return '<th>' + esc(h) + '</th>'; }).join('') + '</tr></thead><tbody>' +
-      (t.rows.length ? t.rows.map(function (r, i) { return '<tr' + (t.dupRows.indexOf(i) >= 0 ? ' class="dup"' : '') + '>' + r.map(function (v) { return v ? '<td>' + esc(v) + '</td>' : '<td class="na">—</td>'; }).join('') + '</tr>'; }).join('') :
-        '<tr><td class="na" colspan="' + t.cols.length + '">No devices yet.</td></tr>') + '</tbody>';
-    var ok = c.total > 0 && t.cols.length > 0;
+    $('apSerialWrap').hidden = !(t.apSerialOption && hasAP);
+    var tab = isJson ? null : exportTable(f);
+    if (isJson) {
+      $('prevHead').textContent = 'Preview · ' + plural(f.rows.length, 'device');
+      $('prevTable').hidden = true; $('prevJson').hidden = false;
+      var text = jsonText(f);
+      $('prevJson').textContent = text.length > 4000 ? text.slice(0, 4000) + '\n…' : text;
+    } else {
+      $('prevTable').hidden = false; $('prevJson').hidden = true;
+      $('prevHead').textContent = 'Preview · ' + plural(tab.rows.length, 'row') + ', ' + plural(tab.header.length, 'column');
+      $('prevTable').innerHTML = !tab.header.length ? '<tr><td class="na">This template has no columns.</td></tr>' :
+        '<thead><tr>' + tab.header.map(function (h) { return '<th>' + esc(h) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+        (tab.rows.length ? tab.rows.map(function (r, i) { return '<tr' + (tab.dupRows.indexOf(i) >= 0 ? ' class="dup"' : '') + '>' + r.map(function (v) { return v ? '<td>' + esc(v) + '</td>' : '<td class="na">—</td>'; }).join('') + '</tr>'; }).join('') :
+          '<tr><td class="na" colspan="' + tab.header.length + '">No devices yet.</td></tr>') + '</tbody>';
+    }
+    $('btnCopy').textContent = isJson ? 'Copy JSON' : 'Copy as table';
+    var ok = c.total > 0 && (isJson || tab.header.length > 0);
     ['btnShare', 'btnDownload', 'btnCopy'].forEach(function (id) { $(id).disabled = !ok; });
   }
 
@@ -795,14 +781,80 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       } catch (e) { if (!e || e.name !== 'AbortError') setStatus('Sharing failed (' + (e && e.message || 'error') + '). Use Download instead.', 'warn'); }
     } else {
       var n = downloadFile();
-      setStatus('This browser cannot attach files to a share, so ' + n + ' was downloaded instead.', 'warn');
+      if (!state.shareNoted) {
+        state.shareNoted = true; save();
+        setStatus('This browser cannot attach files to the share sheet, so ' + n + ' was downloaded instead. Attach it from your downloads or Files. (Shown once.)', 'warn');
+      }
     }
   }
   async function copyTable() {
     var f = cur(); if (!f) return;
-    try { await navigator.clipboard.writeText(toTsv(exportTable(f))); setStatus('Copied. Paste into Excel, Numbers, Sheets or an email.'); }
+    var text = state.exp.format === 'json' ? jsonText(f) : toTsv(exportTable(f));
+    try { await navigator.clipboard.writeText(text); setStatus(state.exp.format === 'json' ? 'JSON copied.' : 'Copied. Paste into Excel, Numbers, Sheets or an email.'); }
     catch (e) { setStatus('Copy is blocked in this browser. Use Download or Email instead.', 'warn'); }
   }
+
+  /* ---------- template editor ---------- */
+  var editing = null;
+  function openTemplateEditor(t) {
+    editing = JSON.parse(JSON.stringify(t));
+    $('tplName').value = editing.name;
+    renderTemplateEditor();
+    var d = $('dlgTpl'); if (d.showModal) d.showModal(); else d.setAttribute('open', '');
+  }
+  function renderTemplateEditor() {
+    var on = editing.cols.map(function (c) { return c.key; });
+    var rows = editing.cols.map(function (c) { return { key: c.key, header: c.header, on: true }; })
+      .concat(COLUMN_KEYS.filter(function (k) { return on.indexOf(k) < 0; }).map(function (k) { return { key: k, header: COLUMNS[k].header, on: false }; }));
+    $('tplCols').innerHTML = rows.map(function (r, i) {
+      return '<li class="tplcol' + (r.on ? '' : ' off') + '" data-key="' + r.key + '">' +
+        '<label class="tplon"><input type="checkbox"' + (r.on ? ' checked' : '') + ' aria-label="Include ' + esc(COLUMNS[r.key].label) + '"><span>' + esc(COLUMNS[r.key].label) + '</span></label>' +
+        '<input class="input tplhead" type="text" value="' + esc(r.header) + '" aria-label="Header for ' + esc(COLUMNS[r.key].label) + '"' + (r.on ? '' : ' disabled') + '>' +
+        '<span class="tplmove"><button type="button" class="iconbtn" data-move="-1" aria-label="Move up"' + (r.on && i > 0 ? '' : ' disabled') + '>↑</button>' +
+        '<button type="button" class="iconbtn" data-move="1" aria-label="Move down"' + (r.on && i < on.length - 1 ? '' : ' disabled') + '>↓</button></span></li>';
+    }).join('');
+  }
+  function readTemplateEditor() {
+    editing.name = $('tplName').value;
+    editing.cols = Array.prototype.filter.call($('tplCols').children, function (li) { return li.querySelector('input[type=checkbox]').checked; })
+      .map(function (li) { return { key: li.dataset.key, header: li.querySelector('.tplhead').value }; });
+  }
+  $('tplCols').addEventListener('change', function (e) {
+    if (e.target.type !== 'checkbox') return;
+    readTemplateEditor(); renderTemplateEditor();
+  });
+  $('tplCols').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-move]'); if (!b) return;
+    readTemplateEditor();
+    var key = b.closest('li').dataset.key, i = editing.cols.findIndex(function (c) { return c.key === key; }), j = i + Number(b.dataset.move);
+    if (i < 0 || j < 0 || j >= editing.cols.length) return;
+    var tmp = editing.cols[i]; editing.cols[i] = editing.cols[j]; editing.cols[j] = tmp;
+    renderTemplateEditor();
+    var again = $('tplCols').querySelector('li[data-key="' + key + '"] button[data-move="' + b.dataset.move + '"]');
+    if (again && !again.disabled) again.focus();
+  });
+  $('tplForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    readTemplateEditor();
+    var t = cleanTemplate(editing);
+    if (!t.cols.length) { $('tplErr').hidden = false; return; }
+    $('tplErr').hidden = true;
+    var i = state.templates.findIndex(function (x) { return x.id === t.id; });
+    if (i >= 0) state.templates[i] = t; else state.templates.push(t);
+    state.exp.template = t.id; save();
+    $('dlgTpl').close(); renderExport();
+  });
+  $('btnTplCancel').addEventListener('click', function () { $('dlgTpl').close(); });
+  $('btnTplNew').addEventListener('click', function () { openTemplateEditor(newTemplate('My template')); });
+  $('btnTplEdit').addEventListener('click', function () { openTemplateEditor(template()); });
+  $('btnTplDel').addEventListener('click', function (e) {
+    var t = template(); if (t.builtin) return;
+    twoStep(e.target, 'deltpl', 'Delete', function () {
+      state.templates = state.templates.filter(function (x) { return x.id !== t.id; });
+      state.exp.template = 'full'; save(); renderExport(); setStatus('Template “' + t.name + '” deleted.');
+    });
+  });
+  $('tplSel').addEventListener('change', function (e) { state.exp.template = e.target.value; save(); renderExport(); });
 
   /* ---------- new file sheet ---------- */
   var nameEdited = false;
@@ -898,17 +950,6 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
 
   $('btnExport').addEventListener('click', function () { var f = cur(); if (f && f.rows.length) go('#/f/' + encodeURIComponent(f.id) + '/export'); });
   document.querySelectorAll('[data-fmt]').forEach(function (b) { b.addEventListener('click', function () { state.exp.format = b.dataset.fmt; save(); renderExport(); }); });
-  document.querySelectorAll('[data-preset]').forEach(function (b) {
-    b.addEventListener('click', function () {
-      var f = cur();
-      if (b.dataset.preset === 'custom' && !Array.isArray(state.exp.custom) && f) state.exp.custom = presetCols(f, state.exp.preset);
-      state.exp.preset = b.dataset.preset; save(); renderExport();
-    });
-  });
-  $('colPick').addEventListener('change', function () {
-    state.exp.custom = Array.prototype.map.call($('colPick').querySelectorAll('input:checked'), function (i) { return i.value; });
-    save(); renderExport();
-  });
   $('macStyle').addEventListener('change', function (e) { state.exp.macStyle = e.target.value; save(); renderExport(); });
   $('apSerial').addEventListener('change', function (e) { state.exp.apSerial = e.target.value; save(); renderExport(); });
   $('btnShare').addEventListener('click', shareFile);
@@ -1031,7 +1072,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     twoStep(e.target, 'delall', 'Delete all data', async function () {
       var n = state.files.length;
       state.files = []; state.assetRe = Core.DEFAULT_ASSET_RE; state.autoSave = false; delete state.zoom;
-      state.exp = { format: 'xlsx', preset: 'full', custom: null, macStyle: 'colons', apSerial: 'cisco' };
+      state.exp = { format: 'csv', template: 'full', macStyle: 'colons', apSerial: 'cisco' }; state.templates = []; state.shareNoted = false;
       clearUndo();
       await store.clear();
       $('assetRe').value = state.assetRe; $('autoSave').checked = false;
