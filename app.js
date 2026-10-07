@@ -1,21 +1,56 @@
-/* Label Scanner app: live camera scan, photo scan, device list, CSV export. */
+/* Label Scanner app: scan files, live camera scan, photo scan, device list, CSV/Excel export. */
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
   var Core = window.Core;
   var LABEL = Object.assign({ note: 'Note' }, Core.FIELD_LABEL);
-  var STORE = 'labelscanner.v2';
+  var STORE = 'labelscanner.v3', OLD_STORE = 'labelscanner.v2';
 
-  var state = { rows: [], template: 'full', macStyle: 'colons', apSerial: 'cisco', assetRe: Core.DEFAULT_ASSET_RE, seq: 0 };
-  var busy = false, targetId = null, decodeFn = null;
+  var KIND = {
+    AP: { label: 'Access points', one: 'AP' },
+    Switch: { label: 'Switches', one: 'Switch' },
+    Mixed: { label: 'Different devices', one: 'Device' }
+  };
+  var ICON = {
+    AP: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1.2" fill="currentColor"/><path d="M2 9a14 14 0 0 1 20 0"/></svg>',
+    Switch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="7" width="19" height="10" rx="2"/><path d="M6 11h1M9 11h1M12 11h1M15 11h1M6 14h1M9 14h1M12 14h1M15 14h1"/></svg>',
+    Mixed: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></svg>'
+  };
+  var CHEV = '<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+
+  /* export columns, in output order */
+  var COLS = [
+    ['type', 'Type'], ['assetTag', 'Asset Tag'], ['mac', 'MAC Address'], ['serial', 'Serial Number'], ['meraki', 'Meraki Serial'],
+    ['pid', 'Model (PID)'], ['partNo', 'Part Number'], ['clei', 'CLEI'], ['note', 'Note'], ['scannedAt', 'Scanned At'], ['site', 'Site'], ['file', 'File']
+  ];
+  var COL_HEAD = {}; COLS.forEach(function (c) { COL_HEAD[c[0]] = c[1]; });
+
+  var state = {
+    files: [], assetRe: Core.DEFAULT_ASSET_RE,
+    exp: { format: 'xlsx', preset: 'full', custom: null, macStyle: 'colons', apSerial: 'cisco' }
+  };
+  var busy = false, targetId = null, decodeFn = null, route = { view: 'home' }, entryLevel = null;
 
   /* ---------- storage ---------- */
   function load() {
     try {
       var s = JSON.parse(localStorage.getItem(STORE) || 'null');
       if (s && typeof s === 'object') {
-        ['template', 'macStyle', 'apSerial', 'assetRe'].forEach(function (k) { if (typeof s[k] === 'string') state[k] = s[k]; });
-        if (Array.isArray(s.rows)) { state.rows = s.rows; state.seq = s.seq || s.rows.length; }
+        if (Array.isArray(s.files)) state.files = s.files;
+        if (typeof s.assetRe === 'string') state.assetRe = s.assetRe;
+        if (s.exp && typeof s.exp === 'object') Object.assign(state.exp, s.exp);
+        return;
+      }
+      var old = JSON.parse(localStorage.getItem(OLD_STORE) || 'null');
+      if (old && typeof old === 'object') {
+        if (typeof old.assetRe === 'string') state.assetRe = old.assetRe;
+        ['macStyle', 'apSerial'].forEach(function (k) { if (typeof old[k] === 'string') state.exp[k] = old[k]; });
+        if (old.template === 'short') state.exp.preset = 'short';
+        if (Array.isArray(old.rows) && old.rows.length) {
+          var f = newFile('Earlier scans', '', 'Mixed');
+          f.rows = old.rows; f.seq = old.seq || old.rows.length;
+        }
+        save();
       }
     } catch (e) {}
   }
@@ -24,16 +59,36 @@
   /* ---------- helpers ---------- */
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function pad(n) { return (n < 10 ? '0' : '') + n; }
-  function stamp(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()); }
-  function fileStamp(d) { return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes()); }
+  function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function stamp(d) { return ymd(d) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+  function niceDate(s) {
+    var d = new Date(String(s).replace(' ', 'T'));
+    if (isNaN(d)) return s || '';
+    var today = ymd(new Date()) === ymd(d);
+    return today ? 'Today ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  }
   function setStatus(msg, kind) { var s = $('status'); s.hidden = !msg; s.textContent = msg || ''; s.dataset.kind = kind || ''; }
   function setPill(text, kind) { var p = $('decoderPill'); p.textContent = text; p.dataset.kind = kind || ''; }
   function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
   function nextFrame() { return new Promise(function (r) { requestAnimationFrame(function () { r(); }); }); }
-  function csvName() { return 'label-scan-' + fileStamp(new Date()) + '.csv'; }
-  function currentCsv() { return Core.toCsv(state.rows, state.template, { macStyle: state.macStyle, apSerial: state.apSerial }); }
   function expectedFor(type) { return Core.EXPECTED[type] || Core.EXPECTED.Other; }
+  function cur() { return route.id ? state.files.find(function (f) { return f.id === route.id; }) : null; }
+  function findRow(f, id) { return f && f.rows.find(function (r) { return r.id === id; }); }
+  function missingOf(row) { return expectedFor(row.type).filter(function (f) { return !row[f]; }); }
+  function counts(f) {
+    var done = f.rows.filter(function (r) { return !missingOf(r).length; }).length;
+    return { total: f.rows.length, done: done, miss: f.rows.length - done };
+  }
+
+  /* ---------- files ---------- */
+  function newFile(name, site, kind) {
+    var now = stamp(new Date());
+    var f = { id: 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: name, site: site || '', kind: KIND[kind] ? kind : 'Mixed', created: now, updated: now, rows: [], seq: 0 };
+    state.files.push(f);
+    return f;
+  }
+  function touch(f) { f.updated = stamp(new Date()); }
 
   /* ---------- decoder ---------- */
   var ZOPTS = { formats: ['Code128', 'Code39', 'DataMatrix', 'QRCode'], tryHarder: true, tryRotate: true, tryInvert: true, tryDownscale: true, maxNumberOfSymbols: 20 };
@@ -52,39 +107,40 @@
           return { format: r.format, text: r.text, pos: p ? [p.topLeft, p.topRight, p.bottomRight, p.bottomLeft] : null };
         });
       };
-      setPill('Decoder ready', 'ok');
+      setPill('Ready', 'ok');
     } catch (e) {
       decodeFn = null;
-      setPill('Decoder failed', 'bad');
+      setPill('Scanner offline', 'bad');
       setStatus('The barcode decoder could not load (' + (e && e.message || 'unknown error') + '). You can still add devices by hand.', 'bad');
     }
     setBusy(busy);
   }
 
   /* ---------- rows ---------- */
-  function newRow(dev) {
-    state.seq += 1;
+  function newRow(f, dev) {
+    f.seq += 1;
     return {
-      id: 'd' + Date.now().toString(36) + state.seq, n: state.seq, type: dev.type || 'Other',
+      id: 'd' + Date.now().toString(36) + f.seq, n: f.seq, type: dev.type || 'Other',
       assetTag: dev.assetTag || '', mac: dev.mac || '', serial: dev.serial || '', meraki: dev.meraki || '', pid: dev.pid || '', partNo: dev.partNo || '', clei: dev.clei || '',
       note: '', scannedAt: stamp(new Date()), warnings: dev.warnings || [], other: dev.other || [], serialAgrees: !!dev.serialAgrees,
       scanned: {}, edited: {}
     };
   }
-  /* codes -> new device, or merged into the device with id tid. Returns the row or null. */
-  function ingest(codes, tid) {
+  /* codes -> new device in file f, or merged into the device with id tid. Returns the row or null. */
+  function ingest(f, codes, tid) {
     var dev = Core.buildDevice(codes, { assetRe: state.assetRe });
-    var got = Core.FIELD_ORDER.filter(function (f) { return dev[f]; }).length;
+    var got = Core.FIELD_ORDER.filter(function (k) { return dev[k]; }).length;
     if (!got && !dev.other.length) return null;
-    var row = tid && state.rows.find(function (r) { return r.id === tid; });
+    if (f.kind !== 'Mixed') dev.type = f.kind;
+    var row = tid && findRow(f, tid);
     if (row) Core.mergeDevice(row, dev);
-    else { row = newRow(dev); state.rows.push(row); }
-    Core.FIELD_ORDER.forEach(function (f) { if (dev[f] && row[f] === dev[f]) row.scanned[f] = true; });
+    else { row = newRow(f, dev); f.rows.push(row); }
+    Core.FIELD_ORDER.forEach(function (k) { if (dev[k] && row[k] === dev[k]) row.scanned[k] = true; });
+    touch(f);
     return row;
   }
   function summary(row) {
-    var exp = expectedFor(row.type);
-    var missing = exp.filter(function (f) { return !row[f]; }).map(function (f) { return Core.FIELD_LABEL[f]; });
+    var exp = expectedFor(row.type), missing = missingOf(row).map(function (k) { return Core.FIELD_LABEL[k]; });
     return { text: row.type + ' #' + row.n + ': ' + (exp.length - missing.length) + ' of ' + exp.length + ' fields' + (missing.length ? '. Missing: ' + missing.join(', ') + '.' : '.'), kind: missing.length ? 'warn' : '' };
   }
 
@@ -92,14 +148,15 @@
   var live = { stream: null, track: null, running: false, codes: new Map(), target: null, frames: 0, canvas: null };
 
   async function startLive(tid) {
-    if (live.running || !decodeFn) return;
+    var f = cur();
+    if (!f || live.running || !decodeFn) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setStatus('This browser cannot open the camera here. Open the app from its https:// GitHub Pages address in Safari, or use Take photo.', 'bad');
+      setStatus('This browser cannot open the camera here. Open the app from its https:// address in Safari, or use Take photo.', 'bad');
       return;
     }
     live.target = tid || null; live.codes = new Map(); live.frames = 0;
-    $('liveTitle').textContent = live.target ? 'Adding to device #' + (state.rows.find(function (r) { return r.id === live.target; }) || {}).n : 'Live scan';
-    $('scanPanel').hidden = true; $('livePanel').hidden = false; $('exportPanel').hidden = true;
+    $('liveTitle').textContent = live.target ? 'Adding to device #' + (findRow(f, live.target) || {}).n : 'Live scan';
+    $('scanPanel').hidden = true; $('livePanel').hidden = false; $('bottomBar').hidden = true;
     $('liveMsg').textContent = 'Starting camera…'; setStatus('');
     renderLive();
     $('livePanel').scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -115,6 +172,7 @@
         n === 'NotFoundError' ? 'No camera found on this device.' : 'Could not open the camera (' + (e && e.message || n || 'error') + ').', 'bad');
       return;
     }
+    if (route.view !== 'file') { live.stream.getTracks().forEach(function (t) { t.stop(); }); live.stream = null; closeLivePanel(); return; }
     var v = $('video');
     v.srcObject = live.stream;
     try { await v.play(); } catch (e) {}
@@ -128,10 +186,10 @@
     var caps = {};
     try { caps = live.track.getCapabilities ? live.track.getCapabilities() : {}; } catch (e) {}
     try { if (caps.focusMode && caps.focusMode.indexOf('continuous') >= 0) live.track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () {}); } catch (e) {}
-    $('btnTorch').hidden = !caps.torch; $('btnTorch').dataset.on = '';
+    $('btnTorch').hidden = !caps.torch; $('btnTorch').dataset.on = ''; $('btnTorch').textContent = 'Light';
     if (caps.zoom && caps.zoom.max > caps.zoom.min) {
       var z = $('zoom'); z.min = caps.zoom.min; z.max = Math.min(caps.zoom.max, 6); z.step = caps.zoom.step || 0.1;
-      var cur = (live.track.getSettings && live.track.getSettings().zoom) || caps.zoom.min; z.value = cur;
+      var c = (live.track.getSettings && live.track.getSettings().zoom) || caps.zoom.min; z.value = c;
       $('zoomWrap').hidden = false;
     } else $('zoomWrap').hidden = true;
   }
@@ -142,19 +200,19 @@
     var ctx = live.canvas.getContext('2d', { willReadFrequently: true });
     while (live.running) {
       if (v.readyState < 2 || !v.videoWidth) { await sleep(100); continue; }
-      var vw = v.videoWidth, vh = v.videoHeight, f = Math.min(1, 1920 / Math.max(vw, vh));
-      var cw = Math.round(vw * f), ch = Math.round(vh * f);
+      var vw = v.videoWidth, vh = v.videoHeight, k = Math.min(1, 1920 / Math.max(vw, vh));
+      var cw = Math.round(vw * k), ch = Math.round(vh * k);
       if (live.canvas.width !== cw || live.canvas.height !== ch) { live.canvas.width = cw; live.canvas.height = ch; }
       ctx.drawImage(v, 0, 0, cw, ch);
       var img = ctx.getImageData(0, 0, cw, ch);
       var list = [];
       try { list = await Core.scanImage({ data: img.data, width: cw, height: ch }, decodeFn, { noTiles: true }); } catch (e) {}
       if (!live.running) break;
-      live.frames++; live.dims = cw + 'x' + ch;
+      live.frames++;
       var fresh = false;
       list.forEach(function (c) {
-        var k = c.format + '|' + c.text, h = live.codes.get(k);
-        if (h) h.count += c.count; else { live.codes.set(k, { format: c.format, text: c.text, count: c.count }); fresh = true; }
+        var key = c.format + '|' + c.text, h = live.codes.get(key);
+        if (h) h.count += c.count; else { live.codes.set(key, { format: c.format, text: c.text, count: c.count }); fresh = true; }
       });
       if (fresh) flash();
       renderLive();
@@ -171,32 +229,33 @@
   function liveDevice() { return Core.buildDevice(Array.from(live.codes.values()), { assetRe: state.assetRe }); }
 
   function renderLive() {
+    var f = cur(); if (!f) return;
     var dev = liveDevice();
-    var row = live.target && state.rows.find(function (r) { return r.id === live.target; });
-    var type = row && row.type !== 'Other' ? row.type : dev.type;
+    var row = live.target && findRow(f, live.target);
+    var type = f.kind !== 'Mixed' ? f.kind : (row && row.type !== 'Other' ? row.type : dev.type);
     var exp = expectedFor(type);
-    var shown = exp.concat(Core.FIELD_ORDER.filter(function (f) { return exp.indexOf(f) < 0 && dev[f]; }));
-    var got = Core.FIELD_ORDER.filter(function (f) { return dev[f]; }).length;
-    $('liveType').textContent = got ? type : 'Looking…';
-    $('found').innerHTML = shown.map(function (f) {
-      var val = dev[f] || (row && row[f] ? row[f] + ' (already saved)' : '');
-      var cls = dev[f] ? 'got' : 'miss';
-      return '<li class="' + cls + '"><span class="k">' + esc(Core.FIELD_LABEL[f]) + '</span><span class="v">' + esc(val || 'not yet') + '</span></li>';
+    var shown = exp.concat(Core.FIELD_ORDER.filter(function (k) { return exp.indexOf(k) < 0 && dev[k]; }));
+    var got = Core.FIELD_ORDER.filter(function (k) { return dev[k]; }).length;
+    $('liveType').textContent = got || f.kind !== 'Mixed' ? type : 'Looking…';
+    $('liveType').className = 'badge ' + (type === 'Switch' ? 'Switch' : type === 'AP' ? 'AP' : 'Mixed');
+    $('found').innerHTML = shown.map(function (k) {
+      var val = dev[k] || (row && row[k] ? row[k] + ' (already saved)' : '');
+      return '<li class="' + (dev[k] ? 'got' : 'miss') + '"><span class="k">' + esc(Core.FIELD_LABEL[k]) + '</span><span class="v">' + esc(val || 'not yet') + '</span></li>';
     }).join('');
-    var missing = exp.filter(function (f) { return !dev[f] && !(row && row[f]); }).length;
+    var missing = exp.filter(function (k) { return !dev[k] && !(row && row[k]); }).length;
     $('liveMsg').textContent = !live.running ? 'Starting camera…' :
       !live.codes.size ? (live.frames > 6 ? 'No barcodes yet. Move closer and hold steady.' : 'Looking for barcodes…') :
       missing ? 'Reading… ' + plural(missing, 'field') + ' to go. Move slowly along the label.' : 'All expected fields read. Tap Save device.';
     $('btnSaveDev').disabled = !got;
-    $('btnSaveDev').textContent = got ? 'Save device (' + got + ')' : 'Save device';
+    $('btnSaveDev').textContent = got ? 'Save (' + got + ')' : 'Save device';
   }
 
   function saveLiveDevice() {
-    var codes = Array.from(live.codes.values());
-    if (!codes.length) return;
+    var f = cur(), codes = Array.from(live.codes.values());
+    if (!f || !codes.length) return;
     var tid = live.target;
-    var row = ingest(codes, tid);
-    save(); renderAll();
+    var row = ingest(f, codes, tid);
+    save(); renderFile();
     if (row) { var s = summary(row); setStatus('Saved. ' + s.text + (tid ? '' : ' Point at the next device.'), s.kind); }
     live.codes = new Map(); live.frames = 0;
     if (tid) stopLive(); else renderLive();
@@ -211,6 +270,7 @@
   }
   function closeLivePanel() {
     $('livePanel').hidden = true; $('scanPanel').hidden = false; live.target = null;
+    if (route.view === 'file') $('bottomBar').hidden = false;
   }
 
   /* ---------- photos ---------- */
@@ -218,8 +278,8 @@
     var url = URL.createObjectURL(file);
     try {
       var im = new Image(); im.decoding = 'async'; im.src = url; await im.decode();
-      var w = im.naturalWidth, h = im.naturalHeight, f = Math.min(1, 3000 / Math.max(w, h));
-      var cw = Math.max(1, Math.round(w * f)), ch = Math.max(1, Math.round(h * f));
+      var w = im.naturalWidth, h = im.naturalHeight, k = Math.min(1, 3000 / Math.max(w, h));
+      var cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(h * k));
       var c = document.createElement('canvas'); c.width = cw; c.height = ch;
       var ctx = c.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(im, 0, 0, cw, ch);
@@ -238,7 +298,8 @@
   }
 
   async function handleFiles(files, tid) {
-    if (!files || !files.length || !decodeFn || busy) return;
+    var f = cur();
+    if (!f || !files || !files.length || !decodeFn || busy) return;
     setBusy(true); setStatus('');
     var lastRow = null, added = 0, empty = 0, failed = 0;
     for (var i = 0; i < files.length; i++) {
@@ -250,13 +311,13 @@
           onProgress: function (d, t, n) { showProgress(label + ': reading · ' + plural(n, 'code') + ' found', d / t); }
         });
         img = null;
-        var row = ingest(codes, tid);
+        var row = ingest(f, codes, tid);
         if (!row) { empty++; continue; }
         if (!tid) added++;
         lastRow = row;
       } catch (e) { failed++; }
     }
-    hideProgress(); save(); renderAll();
+    hideProgress(); save(); renderFile();
     if (lastRow) {
       var s = summary(lastRow);
       setStatus((added > 1 ? plural(added, 'device') + ' added. Last: ' : '') + s.text + (s.kind ? ' Scan again from a bit closer, or type it in.' : ''), s.kind);
@@ -266,72 +327,220 @@
     setBusy(false); targetId = null;
   }
 
-  /* ---------- rendering ---------- */
-  function fieldHtml(row, f) {
-    var id = 'f-' + row.id + '-' + f;
-    var src = row.edited && row.edited[f] ? '<span class="src">typed</span>' : (row.scanned && row.scanned[f] ? '<span class="src scan">scanned</span>' : '');
-    var miss = !row[f] && f !== 'note';
-    return '<div class="field' + (miss ? ' missing' : '') + '"><label for="' + id + '"><span>' + esc(LABEL[f]) + '</span>' + src + '</label>' +
-      '<input id="' + id + '" data-row="' + row.id + '" data-field="' + f + '" value="' + esc(row[f]) + '" placeholder="' + (f === 'note' ? 'Closet, rack, anything' : 'not read') + '"' +
-      (f === 'note' ? ' autocapitalize="sentences" style="font-family:var(--font-ui)"' : ' autocapitalize="characters"') + ' autocomplete="off" autocorrect="off" spellcheck="false"></div>';
+  /* ---------- routing ---------- */
+  function parseHash() {
+    var m = /^#\/f\/([^\/]+)(\/export)?$/.exec(location.hash);
+    if (!m) return { view: 'home' };
+    return { view: m[2] ? 'export' : 'file', id: decodeURIComponent(m[1]) };
   }
-  function cardHtml(row) {
-    var exp = expectedFor(row.type);
-    var extra = Core.FIELD_ORDER.filter(function (f) { return exp.indexOf(f) < 0; });
-    var h = '<li class="card" data-row="' + row.id + '"><header>' +
-      '<select class="typesel" data-row="' + row.id + '" data-field="type" aria-label="Device type">' +
-      Core.TYPES.map(function (t) { return '<option' + (t === row.type ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>' +
-      '<span class="model">' + esc(row.pid || 'Device') + '</span><span class="num">#' + row.n + ' · ' + esc((row.scannedAt || '').slice(11)) + '</span></header>';
-    h += '<div class="fields">' + exp.concat(['note']).map(function (f) { return fieldHtml(row, f); }).join('') + '</div>';
-    if (extra.length) h += '<details><summary>More fields (' + extra.length + ')</summary><div class="fields" style="margin-top:8px">' + extra.map(function (f) { return fieldHtml(row, f); }).join('') + '</div></details>';
+  function level(r) { return r.view === 'home' ? 0 : r.view === 'file' ? 1 : 2; }
+  function go(hash) { location.hash = hash; }
+  function goBack() {
+    var parent = route.view === 'export' ? '#/f/' + encodeURIComponent(route.id) : '#/';
+    if (level(route) > entryLevel) history.back(); else location.replace(parent);
+  }
+  function onRoute() {
+    var r = parseHash();
+    if (r.id && !state.files.some(function (f) { return f.id === r.id; })) { location.replace('#/'); return; }
+    if (entryLevel === null || level(r) < entryLevel) entryLevel = level(r);
+    if (live.running && r.view !== 'file') stopLive();
+    var changed = r.view !== route.view || r.id !== route.id;
+    route = r;
+    if (changed) setStatus('');
+    $('viewHome').hidden = r.view !== 'home';
+    $('viewFile').hidden = r.view !== 'file';
+    $('viewExport').hidden = r.view !== 'export';
+    $('btnNew').hidden = r.view !== 'home';
+    $('btnBack').hidden = r.view === 'home';
+    document.querySelector('.appbar .logo').hidden = r.view !== 'home';
+    $('bottomBar').hidden = r.view !== 'file' || live.running;
+    var f = cur();
+    $('title').textContent = r.view === 'home' ? 'Label Scanner' : r.view === 'export' ? 'Export · ' + f.name : f.name;
+    document.title = r.view === 'home' ? 'Label Scanner' : f.name + ' · Label Scanner';
+    if (r.view === 'home') renderHome();
+    if (r.view === 'file') { renderFile(); $('fName').value = f.name; $('fSiteIn').value = f.site; }
+    if (r.view === 'export') openExport();
+    if (changed) window.scrollTo(0, 0);
+  }
+
+  /* ---------- rendering: home ---------- */
+  function renderHome() {
+    var list = state.files.slice().sort(function (a, b) { return a.updated < b.updated ? 1 : a.updated > b.updated ? -1 : 0; });
+    $('homeEmpty').hidden = list.length > 0;
+    $('homeCount').textContent = list.length ? plural(list.length, 'file') : '';
+    $('files').innerHTML = list.map(function (f) {
+      var c = counts(f);
+      var sub = KIND[f.kind].label + (f.site ? ' · ' + f.site : '') + ' · ' + niceDate(f.updated);
+      return '<li><a class="file" href="#/f/' + encodeURIComponent(f.id) + '">' +
+        '<span class="ficon ' + f.kind + '">' + ICON[f.kind] + '</span>' +
+        '<span class="meta"><span class="name">' + esc(f.name) + '</span><span class="sub">' + esc(sub) + '</span></span>' +
+        '<span class="count"><b>' + c.total + '</b><small>' + (c.total === 1 ? 'device' : 'devices') + '</small></span>' + CHEV + '</a></li>';
+    }).join('');
+  }
+
+  /* ---------- rendering: file ---------- */
+  function fieldHtml(row, k) {
+    var id = 'f-' + row.id + '-' + k;
+    var src = row.edited && row.edited[k] ? '<span class="src">typed</span>' : (row.scanned && row.scanned[k] ? '<span class="src scan">scanned</span>' : '');
+    var miss = !row[k] && k !== 'note';
+    return '<div class="field' + (miss ? ' missing' : '') + (k === 'note' ? ' note' : '') + '"><label for="' + id + '"><span>' + esc(LABEL[k]) + '</span>' + src + '</label>' +
+      '<input id="' + id + '" data-row="' + row.id + '" data-field="' + k + '" value="' + esc(row[k]) + '" placeholder="' + (k === 'note' ? 'Closet, rack, room, anything' : 'Not read') + '"' +
+      (k === 'note' ? ' autocapitalize="sentences" style="font-family:var(--font-ui)"' : ' autocapitalize="characters"') + ' autocomplete="off" autocorrect="off" spellcheck="false"></div>';
+  }
+  function cardHtml(f, row) {
+    var exp = expectedFor(row.type), miss = missingOf(row);
+    var extra = Core.FIELD_ORDER.filter(function (k) { return exp.indexOf(k) < 0; });
+    var h = '<li class="card" data-row="' + row.id + '"><header><span class="num">' + row.n + '</span>' +
+      '<span class="ttl"><span class="model' + (row.pid ? '' : ' none') + '">' + esc(row.pid || 'Model not read') + '</span><span class="when">' + esc(row.type === 'Other' ? 'Device' : row.type) + ' · ' + esc(niceDate(row.scannedAt)) + '</span></span>' +
+      (f.kind === 'Mixed' ? '<select class="typesel" data-row="' + row.id + '" data-field="type" aria-label="Device type">' +
+        Core.TYPES.map(function (t) { return '<option' + (t === row.type ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>' : '') +
+      '<span class="state ' + (miss.length ? 'warn' : 'ok') + '">' + (miss.length ? miss.length + ' missing' : 'Complete') + '</span></header>';
+    h += '<div class="fields">' + exp.concat(['note']).map(function (k) { return fieldHtml(row, k); }).join('') + '</div>';
+    if (extra.length) h += '<details><summary>More fields (' + extra.length + ')</summary><div class="fields" style="margin-top:8px">' + extra.map(function (k) { return fieldHtml(row, k); }).join('') + '</div></details>';
     if (row.serialAgrees) h += '<p class="note-ok">Serial read the same from two labels.</p>';
     if (row.warnings && row.warnings.length) h += '<ul class="warns">' + row.warnings.map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') + '</ul>';
     if (row.other && row.other.length) h += '<details class="others"><summary>' + plural(row.other.length, 'other code') + ' not matched to a field</summary><ul>' + row.other.map(function (o) { return '<li>' + esc(o.format) + ': ' + esc(o.text) + '</li>'; }).join('') + '</ul></details>';
     h += '<div class="actions"><button type="button" class="btn small" data-act="live" data-id="' + row.id + '">Scan more</button><button type="button" class="btn small" data-act="photo" data-id="' + row.id + '">Add photo</button><span class="grow"></span><button type="button" class="btn small danger" data-act="del" data-id="' + row.id + '">Delete</button></div></li>';
     return h;
   }
-  function renderAll() {
-    var n = state.rows.length;
-    $('devices').innerHTML = state.rows.slice().reverse().map(cardHtml).join('');
-    $('empty').hidden = n > 0;
-    $('btnClear').hidden = !n;
-    $('finishBar').hidden = !n;
-    $('finishCount').textContent = plural(n, 'device') + ' scanned';
-    $('devHead').textContent = n ? 'Devices (' + n + ')' : 'Devices';
-    if (!n) $('exportPanel').hidden = true;
-    renderExport(); setBusy(busy);
+  function renderStats(f) {
+    var c = counts(f);
+    $('stTotal').textContent = c.total; $('stDone').textContent = c.done; $('stMiss').textContent = c.miss;
+    $('bbText').textContent = c.total ? plural(c.total, 'device') + (c.miss ? ' · ' + c.miss + ' missing info' : ' · all complete') : 'No devices yet';
+    $('btnExport').disabled = !c.total;
+    $('devHead').textContent = c.total ? 'Devices (' + c.total + ')' : 'Devices';
   }
-  function renderExport() {
-    $('tplFull').setAttribute('aria-pressed', String(state.template === 'full'));
-    $('tplShort').setAttribute('aria-pressed', String(state.template === 'short'));
-    $('apSerial').disabled = state.template !== 'short';
-    ['btnShare', 'btnDownload', 'btnCopy'].forEach(function (id) { $(id).disabled = !state.rows.length; });
-    $('csvPreview').textContent = state.rows.length ? currentCsv() : '(nothing to export yet)';
+  function renderFile() {
+    var f = cur(); if (!f) return;
+    $('fIcon').className = 'ficon ' + f.kind; $('fIcon').innerHTML = ICON[f.kind];
+    $('fBadge').className = 'badge ' + f.kind; $('fBadge').textContent = KIND[f.kind].label;
+    $('fSite').textContent = (f.site ? f.site + ' · ' : '') + 'Created ' + niceDate(f.created);
+    $('devices').innerHTML = f.rows.slice().reverse().map(function (r) { return cardHtml(f, r); }).join('');
+    $('devEmpty').hidden = f.rows.length > 0;
+    renderStats(f); setBusy(busy);
   }
 
   /* ---------- export ---------- */
-  function downloadCsv() {
-    var name = csvName(), blob = new Blob([currentCsv()], { type: 'text/csv' }), url = URL.createObjectURL(blob);
-    var a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
-    setStatus('Downloaded ' + name + '.');
+  function presetCols(f, preset) {
+    if (preset === 'short') return ['assetTag', 'mac', 'serial'];
+    var full = f.kind === 'AP' ? ['assetTag', 'mac', 'serial', 'meraki', 'pid', 'note', 'scannedAt'] :
+      f.kind === 'Switch' ? ['assetTag', 'mac', 'serial', 'pid', 'partNo', 'clei', 'note', 'scannedAt'] :
+      ['type', 'assetTag', 'mac', 'serial', 'meraki', 'pid', 'partNo', 'clei', 'note', 'scannedAt'];
+    if (f.site) full = full.concat(['site']);
+    if (preset === 'custom' && Array.isArray(state.exp.custom)) {
+      var pick = state.exp.custom;
+      return COLS.map(function (c) { return c[0]; }).filter(function (k) { return pick.indexOf(k) >= 0; });
+    }
+    return full;
   }
-  async function shareCsv() {
-    var name = csvName(), file = new File([currentCsv()], name, { type: 'text/csv' });
+  function exportTable(f) {
+    var cols = presetCols(f, state.exp.preset), o = state.exp;
+    var merakiSub = o.apSerial === 'meraki' && cols.indexOf('meraki') < 0;
+    var rows = f.rows.slice().sort(function (a, b) { return a.n - b.n; }).map(function (r) {
+      return cols.map(function (k) {
+        if (k === 'mac') return r.mac ? Core.formatMac(r.mac, o.macStyle) : '';
+        if (k === 'serial' && merakiSub && r.type === 'AP' && r.meraki) return r.meraki;
+        if (k === 'site') return f.site || '';
+        if (k === 'file') return f.name;
+        return r[k] == null ? '' : String(r[k]);
+      });
+    });
+    return { cols: cols, header: cols.map(function (k) { return COL_HEAD[k]; }), rows: rows };
+  }
+  function toCsv(t) {
+    return [t.header].concat(t.rows).map(function (r) { return r.map(Core.csvCell).join(','); }).join('\r\n') + '\r\n';
+  }
+  function toTsv(t) {
+    return [t.header].concat(t.rows).map(function (r) { return r.map(function (v) { return String(v).replace(/[\t\r\n]+/g, ' '); }).join('\t'); }).join('\n');
+  }
+  function safeName(s) { return String(s || '').replace(/[\\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/\s+/g, ' ').trim(); }
+  function exportName(f) {
+    var base = safeName($('exName').value) || safeName(f.name) || 'label-scan';
+    return base + '.' + state.exp.format;
+  }
+  function buildFile(f) {
+    var t = exportTable(f), name = exportName(f);
+    if (state.exp.format === 'xlsx') return new File([Xlsx.build(f.name, t.header, t.rows)], name, { type: Xlsx.MIME });
+    return new File([toCsv(t)], name, { type: 'text/csv' });
+  }
+
+  function openExport() {
+    var f = cur(); if (!f) return;
+    var base = safeName(f.name), today = ymd(new Date());
+    $('exName').value = base.indexOf(today) >= 0 ? base : base + ' ' + today;
+    $('macStyle').value = state.exp.macStyle; $('apSerial').value = state.exp.apSerial;
+    renderExport();
+  }
+  function renderExport() {
+    var f = cur(); if (!f) return;
+    var c = counts(f), o = state.exp;
+    $('exTotal').textContent = c.total; $('exDone').textContent = c.done; $('exMiss').textContent = c.miss;
+    var bad = f.rows.filter(function (r) { return missingOf(r).length; });
+    var co = $('exCallout');
+    co.hidden = !c.total;
+    co.className = 'callout' + (bad.length ? '' : ' ok');
+    co.textContent = bad.length ?
+      plural(bad.length, 'device') + ' missing information: ' + bad.slice(0, 4).map(function (r) { return '#' + r.n + ' (' + missingOf(r).map(function (k) { return Core.FIELD_LABEL[k]; }).join(', ') + ')'; }).join('; ') + (bad.length > 4 ? '; and ' + (bad.length - 4) + ' more.' : '.') + ' You can still export.' :
+      'All ' + plural(c.total, 'device') + ' have every expected field.';
+    document.querySelectorAll('[data-fmt]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.fmt === o.format)); });
+    document.querySelectorAll('[data-preset]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.preset === o.preset)); });
+    $('exExt').textContent = '.' + o.format;
+    var t = exportTable(f);
+    $('colPick').hidden = o.preset !== 'custom';
+    if (o.preset === 'custom') {
+      $('colPick').innerHTML = COLS.map(function (col) {
+        return '<label><input type="checkbox" value="' + col[0] + '"' + (t.cols.indexOf(col[0]) >= 0 ? ' checked' : '') + '>' + esc(col[1]) + '</label>';
+      }).join('');
+    }
+    var hasAP = f.kind === 'AP' || f.rows.some(function (r) { return r.type === 'AP'; });
+    $('apSerialWrap').hidden = !(hasAP && t.cols.indexOf('serial') >= 0 && t.cols.indexOf('meraki') < 0);
+    $('prevHead').textContent = 'Preview · ' + plural(t.rows.length, 'row') + ', ' + plural(t.cols.length, 'column');
+    $('prevTable').innerHTML = !t.cols.length ? '<tr><td class="na">Pick at least one column.</td></tr>' :
+      '<thead><tr>' + t.header.map(function (h) { return '<th>' + esc(h) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+      (t.rows.length ? t.rows.map(function (r) { return '<tr>' + r.map(function (v) { return v ? '<td>' + esc(v) + '</td>' : '<td class="na">—</td>'; }).join('') + '</tr>'; }).join('') :
+        '<tr><td class="na" colspan="' + t.cols.length + '">No devices yet.</td></tr>') + '</tbody>';
+    var ok = c.total > 0 && t.cols.length > 0;
+    ['btnShare', 'btnDownload', 'btnCopy'].forEach(function (id) { $(id).disabled = !ok; });
+  }
+
+  function downloadFile() {
+    var f = cur(); if (!f) return;
+    var file = buildFile(f), url = URL.createObjectURL(file);
+    var a = document.createElement('a'); a.href = url; a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+    setStatus('Downloaded ' + file.name + '.');
+    return file.name;
+  }
+  async function shareFile() {
+    var f = cur(); if (!f) return;
+    var file = buildFile(f);
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
-        await navigator.share({ files: [file], title: name, text: plural(state.rows.length, 'device') + ' scanned ' + stamp(new Date()) + '.' });
-        setStatus('Shared ' + name + '.');
-      } catch (e) { if (!e || e.name !== 'AbortError') setStatus('Sharing failed (' + (e && e.message || 'error') + '). Use Download CSV instead.', 'warn'); }
+        await navigator.share({ files: [file], title: file.name, text: f.name + (f.site ? ' (' + f.site + ')' : '') + ': ' + plural(f.rows.length, 'device') + ', exported ' + stamp(new Date()) + '.' });
+        setStatus('Shared ' + file.name + '.');
+      } catch (e) { if (!e || e.name !== 'AbortError') setStatus('Sharing failed (' + (e && e.message || 'error') + '). Use Download instead.', 'warn'); }
     } else {
-      downloadCsv();
-      setStatus('This browser cannot attach files to a share. The CSV was downloaded instead.', 'warn');
+      var n = downloadFile();
+      setStatus('This browser cannot attach files to a share, so ' + n + ' was downloaded instead.', 'warn');
     }
   }
-  async function copyCsv() {
-    try { await navigator.clipboard.writeText(currentCsv()); setStatus('CSV copied. Paste it into Notes, Mail or a spreadsheet.'); }
-    catch (e) { $('previewBox').open = true; setStatus('Copy is blocked here. Press and hold the preview to select the text.', 'warn'); }
+  async function copyTable() {
+    var f = cur(); if (!f) return;
+    try { await navigator.clipboard.writeText(toTsv(exportTable(f))); setStatus('Copied. Paste into Excel, Numbers, Sheets or an email.'); }
+    catch (e) { setStatus('Copy is blocked in this browser. Use Download or Email instead.', 'warn'); }
   }
+
+  /* ---------- new file sheet ---------- */
+  var nameEdited = false;
+  function defaultName(kind) { return KIND[kind].label + ' ' + ymd(new Date()); }
+  function selectedKind() { var r = document.querySelector('#newForm input[name="kind"]:checked'); return r ? r.value : 'AP'; }
+  function openNew() {
+    var d = $('dlgNew');
+    $('newForm').reset(); nameEdited = false;
+    $('newName').value = defaultName(selectedKind());
+    if (d.showModal) d.showModal(); else d.setAttribute('open', '');
+  }
+  function closeNew() { var d = $('dlgNew'); if (d.close) d.close(); else d.removeAttribute('open'); }
 
   /* ---------- events ---------- */
   var armed = {};
@@ -340,7 +549,23 @@
     armed[key] = { t: setTimeout(function () { btn.textContent = label; delete armed[key]; }, 3000) };
     btn.textContent = 'Tap again to confirm';
   }
-  function onFiles(e) { var f = Array.prototype.slice.call(e.target.files || []); e.target.value = ''; handleFiles(f, targetId); }
+  function onFiles(e) { var list = Array.prototype.slice.call(e.target.files || []); e.target.value = ''; handleFiles(list, targetId); }
+
+  document.querySelectorAll('[data-icon]').forEach(function (el) { el.innerHTML = ICON[el.dataset.icon]; });
+  $('btnBack').addEventListener('click', goBack);
+  $('btnNew').addEventListener('click', openNew);
+  $('btnNewCancel').addEventListener('click', closeNew);
+  $('newName').addEventListener('input', function () { nameEdited = true; });
+  $('newForm').addEventListener('change', function (e) {
+    if (e.target.name === 'kind' && !nameEdited) $('newName').value = defaultName(e.target.value);
+  });
+  $('newForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var name = $('newName').value.trim() || defaultName(selectedKind());
+    var f = newFile(name, $('newSite').value.trim(), selectedKind());
+    save(); closeNew();
+    go('#/f/' + encodeURIComponent(f.id));
+  });
 
   $('btnLive').addEventListener('click', function () { startLive(null); });
   $('btnCam').addEventListener('click', function () { targetId = null; $('inCam').click(); });
@@ -348,7 +573,8 @@
   $('inCam').addEventListener('change', onFiles);
   $('inLib').addEventListener('change', onFiles);
   $('btnManual').addEventListener('click', function () {
-    var row = newRow({}); state.rows.push(row); save(); renderAll();
+    var f = cur(); if (!f) return;
+    var row = newRow(f, { type: f.kind === 'Mixed' ? 'Other' : f.kind }); f.rows.push(row); touch(f); save(); renderFile();
     var el = document.getElementById('f-' + row.id + '-assetTag'); if (el) el.focus();
   });
   $('btnSaveDev').addEventListener('click', saveLiveDevice);
@@ -366,53 +592,77 @@
     if (document.hidden && live.running) { stopLive(); setStatus('Camera closed while the app was in the background. Codes not saved were cleared.', 'warn'); }
   });
 
-  $('btnFinish').addEventListener('click', function () {
-    if (live.running) stopLive();
-    $('exportPanel').hidden = false; $('macStyle').value = state.macStyle; $('apSerial').value = state.apSerial; renderExport();
-    $('exportPanel').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  $('fName').addEventListener('change', function (e) {
+    var f = cur(); if (!f) return;
+    var v = e.target.value.trim(); if (!v) { e.target.value = f.name; return; }
+    f.name = v; touch(f); save(); $('title').textContent = v;
   });
-  $('btnBack').addEventListener('click', function () { $('exportPanel').hidden = true; window.scrollTo({ top: 0, behavior: 'smooth' }); });
-  $('tplFull').addEventListener('click', function () { state.template = 'full'; save(); renderExport(); });
-  $('tplShort').addEventListener('click', function () { state.template = 'short'; save(); renderExport(); });
-  $('macStyle').addEventListener('change', function (e) { state.macStyle = e.target.value; save(); renderExport(); });
-  $('apSerial').addEventListener('change', function (e) { state.apSerial = e.target.value; save(); renderExport(); });
+  $('fSiteIn').addEventListener('change', function (e) { var f = cur(); if (!f) return; f.site = e.target.value.trim(); touch(f); save(); renderFile(); });
+  $('btnDelFile').addEventListener('click', function (e) {
+    var f = cur(); if (!f) return;
+    twoStep(e.target, 'delfile', 'Delete this file', function () {
+      state.files = state.files.filter(function (x) { return x.id !== f.id; }); save();
+      location.replace('#/'); setStatus('Deleted ' + f.name + '.');
+    });
+  });
+
+  $('btnExport').addEventListener('click', function () { var f = cur(); if (f && f.rows.length) go('#/f/' + encodeURIComponent(f.id) + '/export'); });
+  document.querySelectorAll('[data-fmt]').forEach(function (b) { b.addEventListener('click', function () { state.exp.format = b.dataset.fmt; save(); renderExport(); }); });
+  document.querySelectorAll('[data-preset]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var f = cur();
+      if (b.dataset.preset === 'custom' && !Array.isArray(state.exp.custom) && f) state.exp.custom = presetCols(f, state.exp.preset);
+      state.exp.preset = b.dataset.preset; save(); renderExport();
+    });
+  });
+  $('colPick').addEventListener('change', function () {
+    state.exp.custom = Array.prototype.map.call($('colPick').querySelectorAll('input:checked'), function (i) { return i.value; });
+    save(); renderExport();
+  });
+  $('macStyle').addEventListener('change', function (e) { state.exp.macStyle = e.target.value; save(); renderExport(); });
+  $('apSerial').addEventListener('change', function (e) { state.exp.apSerial = e.target.value; save(); renderExport(); });
+  $('btnShare').addEventListener('click', shareFile);
+  $('btnDownload').addEventListener('click', downloadFile);
+  $('btnCopy').addEventListener('click', copyTable);
+
   $('assetRe').addEventListener('change', function (e) {
     try { new RegExp(e.target.value); state.assetRe = e.target.value; setStatus('Asset tag pattern saved. It applies to the next scan.'); }
     catch (x) { setStatus('That pattern is not a valid regular expression.', 'warn'); e.target.value = state.assetRe; }
     save();
   });
-  $('btnShare').addEventListener('click', shareCsv);
-  $('btnDownload').addEventListener('click', downloadCsv);
-  $('btnCopy').addEventListener('click', copyCsv);
-  $('btnClear').addEventListener('click', function (e) {
-    twoStep(e.target, 'clear', 'Clear all', function () { state.rows = []; save(); renderAll(); setStatus('Cleared.'); });
-  });
 
   $('devices').addEventListener('input', function (e) {
     var t = e.target; if (!t.dataset || !t.dataset.field || t.dataset.field === 'type') return;
-    var row = state.rows.find(function (r) { return r.id === t.dataset.row; }); if (!row) return;
-    var f = t.dataset.field;
-    row[f] = f === 'note' ? t.value : t.value.trim();
-    row.edited = row.edited || {}; row.edited[f] = true;
-    save(); renderExport();
+    var f = cur(), row = findRow(f, t.dataset.row); if (!row) return;
+    var k = t.dataset.field;
+    row[k] = k === 'note' ? t.value : t.value.trim();
+    row.edited = row.edited || {}; row.edited[k] = true;
+    touch(f); save(); renderStats(f);
   });
   $('devices').addEventListener('change', function (e) {
     var t = e.target; if (!t.dataset || !t.dataset.field) return;
-    var row = state.rows.find(function (r) { return r.id === t.dataset.row; }); if (!row) return;
-    if (t.dataset.field === 'type') { row.type = t.value; save(); renderAll(); return; }
-    if (t.dataset.field === 'mac') { var n = Core.normalizeMac(t.value); if (n) { row.mac = n; t.value = n; save(); renderExport(); } }
+    var f = cur(), row = findRow(f, t.dataset.row); if (!row) return;
+    if (t.dataset.field === 'type') { row.type = t.value; save(); renderFile(); return; }
+    if (t.dataset.field === 'mac') { var n = Core.normalizeMac(t.value); if (n) { row.mac = n; t.value = n; save(); } }
+    if (t.dataset.field !== 'note') {
+      var card = t.closest('.card'), miss = missingOf(row), chip = card && card.querySelector('.state');
+      if (chip) { chip.className = 'state ' + (miss.length ? 'warn' : 'ok'); chip.textContent = miss.length ? miss.length + ' missing' : 'Complete'; }
+      t.closest('.field').classList.toggle('missing', !row[t.dataset.field]);
+    }
   });
   $('devices').addEventListener('click', function (e) {
     var b = e.target.closest('button[data-act]'); if (!b) return;
-    var id = b.dataset.id;
+    var f = cur(), id = b.dataset.id;
     if (b.dataset.act === 'live') startLive(id);
     if (b.dataset.act === 'photo') { targetId = id; $('inCam').click(); }
-    if (b.dataset.act === 'del') twoStep(b, 'del' + id, 'Delete', function () { state.rows = state.rows.filter(function (r) { return r.id !== id; }); save(); renderAll(); });
+    if (b.dataset.act === 'del') twoStep(b, 'del' + id, 'Delete', function () { f.rows = f.rows.filter(function (r) { return r.id !== id; }); touch(f); save(); renderFile(); });
   });
+
+  window.addEventListener('hashchange', onRoute);
 
   /* ---------- boot ---------- */
   load();
-  $('macStyle').value = state.macStyle; $('apSerial').value = state.apSerial; $('assetRe').value = state.assetRe;
-  renderAll();
+  $('assetRe').value = state.assetRe;
+  onRoute();
   initDecoder();
 })();

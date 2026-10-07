@@ -4,262 +4,474 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Label Scanner">
-<meta name="theme-color" content="#0d5f6e">
+<meta name="theme-color" content="#ffffff">
 <title>Label Scanner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
 :root {
-  --ground: #ecede8; --panel: #f7f7f3; --ink: #1a201d; --ink-2: #55605a; --line: #cdd1c9;
-  --accent: #0d5f6e; --accent-ink: #ffffff; --accent-soft: #d9e9ea;
-  --ok: #2b7a39; --warn: #8f5200; --warn-bg: #f9ecd0; --bad: #b3261e;
+  --ground: #f4f6f9; --panel: #ffffff; --sunk: #f8fafc; --ink: #111827; --ink-2: #5b6472; --ink-3: #8a93a1; --line: #e2e6ec; --line-2: #cfd5de;
+  --accent: #0b63ce; --accent-ink: #ffffff; --accent-soft: #e8f1fc; --accent-line: #b9d3f3;
+  --ok: #157f3c; --ok-soft: #e7f6ec; --warn: #9a5400; --warn-soft: #fff4e0; --bad: #c62828; --bad-soft: #fdecec;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.16);
   --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-data: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ground: #111513; --panel: #1a201d; --ink: #e7ebe8; --ink-2: #9ba69f; --line: #2f3834;
-    --accent: #52c4d4; --accent-ink: #04252b; --accent-soft: #17323a;
-    --ok: #74d083; --warn: #f0b550; --warn-bg: #2f2410; --bad: #ff8d84;
-    color-scheme: dark;
-  }
-}
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
-body {
-  margin: 0; background: var(--ground); color: var(--ink); font-family: var(--font-ui); font-size: 15px; line-height: 1.45;
-  padding: calc(18px + env(safe-area-inset-top, 0px)) 16px calc(40px + env(safe-area-inset-bottom, 0px));
-}
-main { max-width: 560px; margin-inline: auto; display: flex; flex-direction: column; gap: 16px; }
-h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
-h2 { font-size: 12px; font-weight: 600; margin: 0; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); }
+body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--font-ui); font-size: 15px; line-height: 1.45; }
 button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+h1, h2, h3 { margin: 0; }
+.hint { color: var(--ink-2); font-size: 13px; margin: 0; }
 
-header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.pill { font-size: 12px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--ink-2); background: var(--panel); white-space: nowrap; }
-.pill[data-kind="ok"] { color: var(--ok); border-color: currentColor; }
-.pill[data-kind="warn"] { color: var(--warn); border-color: currentColor; }
-.pill[data-kind="bad"] { color: var(--bad); border-color: currentColor; }
+/* app bar */
+.appbar { position: sticky; top: 0; z-index: 20; background: rgba(255,255,255,0.94); backdrop-filter: saturate(1.4) blur(10px); -webkit-backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--line); padding-top: env(safe-area-inset-top, 0px); }
+.appbar .in { max-width: 640px; margin-inline: auto; display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 0 12px 0 16px; }
+.appbar h1 { font-size: 17px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.appbar .brand { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.appbar .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: #fff; display: grid; place-items: center; flex: none; }
+.appbar .logo svg { width: 18px; height: 18px; }
+.iconbtn { width: 40px; height: 40px; border-radius: 10px; border: 0; background: transparent; display: grid; place-items: center; color: var(--ink); flex: none; margin-left: -8px; }
+.iconbtn:hover { background: var(--ground); }
+.iconbtn svg { width: 22px; height: 22px; }
+.pill { font-size: 12px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--ink-2); background: var(--panel); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); }
+.pill[data-kind="ok"]::before { background: var(--ok); }
+.pill[data-kind="bad"] { color: var(--bad); } .pill[data-kind="bad"]::before { background: var(--bad); }
 
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); font-weight: 500; }
+main { max-width: 640px; margin-inline: auto; padding: 16px 16px calc(110px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; gap: 16px; }
+.view { display: flex; flex-direction: column; gap: 16px; }
+.sectionhead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.sectionhead h2 { font-size: 13px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
+.sectionhead span { font-size: 13px; color: var(--ink-2); }
+
+/* buttons */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--panel); font-weight: 500; box-shadow: var(--shadow); }
+.btn:hover { background: var(--sunk); }
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
-.btn.big { min-height: 72px; font-size: 16px; flex-direction: column; gap: 4px; padding: 8px 10px; }
-.btn.big small { font-size: 12px; font-weight: 400; opacity: 0.85; }
-.btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+.btn.primary:hover { background: #0956b4; }
+.btn.ghost { box-shadow: none; border-color: transparent; background: transparent; color: var(--accent); }
 .btn.small { min-height: 36px; padding: 0 12px; font-size: 13px; }
 .btn.danger { color: var(--bad); }
-.btn svg { width: 22px; height: 22px; flex: none; }
+.btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+.btn svg { width: 20px; height: 20px; flex: none; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
-.hint { color: var(--ink-2); font-size: 13px; margin: 0; }
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
-.scan { display: flex; flex-direction: column; gap: 10px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; box-shadow: var(--shadow); }
+
+/* floating + */
+.fab { position: fixed; z-index: 15; right: max(20px, calc(50% - 300px)); bottom: calc(24px + env(safe-area-inset-bottom, 0px)); width: 60px; height: 60px; border-radius: 50%; border: 0; background: var(--accent); color: #fff; box-shadow: 0 6px 20px rgba(11, 99, 206, 0.35); display: grid; place-items: center; }
+.fab svg { width: 28px; height: 28px; }
+.fab:active { transform: scale(0.96); }
+
+/* home: files */
+.files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.file { display: flex; align-items: center; gap: 14px; padding: 14px 14px 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); text-decoration: none; color: inherit; }
+.file:hover { border-color: var(--accent-line); }
+.ficon { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; flex: none; background: var(--accent-soft); color: var(--accent); }
+.ficon svg { width: 24px; height: 24px; }
+.ficon.Switch { background: #eef0fd; color: #4338ca; }
+.ficon.Mixed { background: #eef7f3; color: #0f766e; }
+.file .meta { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.file .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file .sub { font-size: 13px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file .count { text-align: right; flex: none; display: grid; gap: 2px; }
+.file .count b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.file .count small { font-size: 11px; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.05em; }
+.file .chev { color: var(--ink-3); flex: none; }
+.empty-home { text-align: center; padding: 40px 20px; display: grid; gap: 10px; justify-items: center; }
+.empty-home .art { width: 64px; height: 64px; border-radius: 18px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; }
+.empty-home .art svg { width: 32px; height: 32px; }
+.empty-home h2 { font-size: 18px; font-weight: 600; }
+.empty-home p { margin: 0; color: var(--ink-2); max-width: 32ch; }
+
+/* type badge */
+.badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.badge.Switch { background: #eef0fd; color: #4338ca; }
+.badge.Mixed { background: #eef7f3; color: #0f766e; }
+
+/* new file sheet */
+dialog.sheet { border: 0; padding: 0; width: min(560px, 100%); max-width: 100%; max-height: 92vh; margin: auto auto 0; border-radius: 20px 20px 0 0; background: var(--panel); color: var(--ink); box-shadow: var(--shadow-lg); }
+@media (min-width: 600px) { dialog.sheet { margin: auto; border-radius: 20px; } }
+dialog.sheet::backdrop { background: rgba(17, 24, 39, 0.35); }
+.sheet form { display: flex; flex-direction: column; gap: 18px; padding: 20px 18px calc(18px + env(safe-area-inset-bottom, 0px)); }
+.sheet .grab { width: 40px; height: 4px; border-radius: 2px; background: var(--line-2); margin: -8px auto 0; }
+.sheet h2 { font-size: 20px; font-weight: 600; }
+.lbl { display: grid; gap: 6px; font-size: 13px; font-weight: 500; color: var(--ink-2); min-width: 0; }
+.input, .select { width: 100%; min-height: 46px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--panel); font-size: 16px; color: var(--ink); }
+.input:focus, .select:focus { border-color: var(--accent); outline: 3px solid var(--accent-soft); outline-offset: 0; }
+.choices { display: grid; gap: 10px; }
+.choice { position: relative; display: flex; align-items: center; gap: 14px; padding: 14px; border: 1.5px solid var(--line); border-radius: 12px; cursor: pointer; background: var(--panel); }
+.choice input { position: absolute; opacity: 0; pointer-events: none; }
+.choice .t { font-weight: 600; color: var(--ink); }
+.choice .d { font-size: 13px; color: var(--ink-2); }
+.choice .tx { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.choice .radio { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--line-2); flex: none; }
+.choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.choice:has(input:checked) .ficon { background: var(--panel); }
+.choice:has(input:checked) .radio { border: 6px solid var(--accent); }
+.choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sheet .actions { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
+
+/* file view */
+.filehead { display: flex; flex-direction: column; gap: 14px; }
+.filehead .top { display: flex; align-items: center; gap: 12px; }
+.filehead .tx { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.filehead .site { font-size: 13px; color: var(--ink-2); }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.stats div { padding: 10px 12px; display: grid; gap: 2px; background: var(--sunk); }
+.stats div + div { border-left: 1px solid var(--line); }
+.stats b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.stats span { font-size: 11px; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.05em; }
+.stats .ok b { color: var(--ok); } .stats .warn b { color: var(--warn); }
+
+.scanact { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tile { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); text-align: left; min-height: 96px; box-shadow: var(--shadow); }
+.tile:hover { border-color: var(--accent-line); }
+.tile .ic { width: 36px; height: 36px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; }
+.tile .ic svg { width: 20px; height: 20px; }
+.tile b { font-size: 15px; } .tile small { font-size: 12px; color: var(--ink-2); margin-top: -6px; }
+.tile.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tile.primary .ic { background: rgba(255,255,255,0.18); color: #fff; }
+.tile.primary small { color: rgba(255,255,255,0.85); }
+.tile[disabled] { opacity: 0.45; cursor: not-allowed; }
 
 /* live camera */
-.live { display: flex; flex-direction: column; gap: 10px; }
-.viewport { position: relative; border-radius: 12px; overflow: hidden; background: #000; aspect-ratio: 3 / 4; max-height: 62vh; width: 100%; }
+.live { display: flex; flex-direction: column; gap: 12px; }
+.viewport { position: relative; border-radius: 12px; overflow: hidden; background: #0b0f14; aspect-ratio: 3 / 4; max-height: 62vh; width: 100%; }
 .viewport video { width: 100%; height: 100%; object-fit: cover; display: block; }
-.viewport .guide { position: absolute; inset: 14% 8%; border: 2px dashed rgba(255,255,255,0.55); border-radius: 10px; pointer-events: none; }
-.viewport .live-msg { position: absolute; left: 8px; right: 8px; bottom: 8px; padding: 6px 10px; border-radius: 8px; background: rgba(0,0,0,0.6); color: #fff; font-size: 13px; }
-.viewport .flash { position: absolute; inset: 0; border: 4px solid #74d083; border-radius: 12px; opacity: 0; transition: opacity 0.4s; pointer-events: none; }
+.viewport .guide { position: absolute; inset: 14% 8%; border: 2px solid rgba(255,255,255,0.7); border-radius: 12px; pointer-events: none; box-shadow: 0 0 0 999px rgba(0,0,0,0.18); }
+.viewport .live-msg { position: absolute; left: 10px; right: 10px; bottom: 10px; padding: 8px 12px; border-radius: 10px; background: rgba(255,255,255,0.94); color: var(--ink); font-size: 13px; font-weight: 500; }
+.viewport .flash { position: absolute; inset: 0; border: 4px solid #22c55e; border-radius: 12px; opacity: 0; transition: opacity 0.4s; pointer-events: none; }
 .viewport .flash.on { opacity: 1; transition: none; }
 .camctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .camctl label { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink-2); flex: 1; min-width: 160px; }
-.camctl input[type=range] { flex: 1; }
+.camctl input[type=range] { flex: 1; accent-color: var(--accent); }
+.livehead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.livehead b { font-size: 16px; }
 .found { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.found li { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: 13px; padding: 6px 10px; border-radius: 8px; background: var(--ground); border: 1px solid var(--line); }
+.found li { display: grid; grid-template-columns: 8em minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: 13px; padding: 8px 12px; border-radius: 10px; background: var(--sunk); border: 1px solid var(--line); }
 .found li .k { color: var(--ink-2); }
 .found li .v { font-family: var(--font-data); font-size: 14px; overflow-wrap: anywhere; }
-.found li.got { border-color: var(--ok); }
+.found li.got { border-color: #9fd9b3; background: var(--ok-soft); }
 .found li.got .k::before { content: "\2713  "; color: var(--ok); font-weight: 600; }
-.found li.miss .v { color: var(--ink-2); }
-.livehead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.livehead b { font-size: 15px; }
+.found li.miss .v { color: var(--ink-3); }
 
 #progress { display: flex; flex-direction: column; gap: 8px; }
 .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
-#status { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 14px; }
-#status[data-kind="warn"] { background: var(--warn-bg); color: var(--warn); }
-#status[data-kind="bad"] { background: var(--warn-bg); color: var(--bad); }
+#status { margin: 0; padding: 12px 14px; border-radius: 12px; background: var(--accent-soft); color: #0a3f80; border: 1px solid var(--accent-line); font-size: 14px; }
+#status[data-kind="warn"] { background: var(--warn-soft); color: var(--warn); border-color: #f3d39b; }
+#status[data-kind="bad"] { background: var(--bad-soft); color: var(--bad); border-color: #f4b7b7; }
 
-.listhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+/* device cards */
 #devices { display: flex; flex-direction: column; gap: 12px; padding: 0; margin: 0; list-style: none; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 12px; min-width: 0; box-shadow: var(--shadow); }
 .card header { display: flex; align-items: center; gap: 10px; }
-.card .num { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.card .model { font-family: var(--font-data); font-weight: 500; font-size: 14px; overflow-wrap: anywhere; min-width: 0; flex: 1; }
-.typesel { min-height: 32px; border-radius: 99px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--ink); padding: 0 10px; font-size: 13px; font-weight: 600; }
-.fields { display: grid; gap: 10px; }
-.field { display: grid; gap: 3px; min-width: 0; }
+.card .num { width: 32px; height: 32px; border-radius: 9px; background: var(--sunk); border: 1px solid var(--line); display: grid; place-items: center; font-size: 13px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; flex: none; }
+.card .ttl { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.card .model { font-family: var(--font-data); font-weight: 500; font-size: 14px; overflow-wrap: anywhere; }
+.card .model.none { font-family: var(--font-ui); color: var(--ink-3); font-weight: 400; }
+.card .when { font-size: 12px; color: var(--ink-2); }
+.state { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 99px; white-space: nowrap; }
+.state.ok { background: var(--ok-soft); color: var(--ok); }
+.state.warn { background: var(--warn-soft); color: var(--warn); }
+.typesel { min-height: 32px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel); padding: 0 8px; font-size: 13px; font-weight: 500; }
+.fields { display: grid; gap: 10px; grid-template-columns: 1fr; }
+@media (min-width: 520px) { .fields { grid-template-columns: 1fr 1fr; } .fields .field.note { grid-column: 1 / -1; } }
+.field { display: grid; gap: 4px; min-width: 0; }
 .field label { font-size: 12px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; }
-.field label .src { font-size: 11px; }
+.field label .src { font-size: 11px; color: var(--ink-3); }
 .field label .src.scan { color: var(--ok); }
-.field input { width: 100%; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--ground); font-family: var(--font-data); font-size: 16px; }
-.field input::placeholder { color: var(--ink-2); opacity: 0.7; font-family: var(--font-ui); }
-.field.missing input { border-style: dashed; }
+.field input { width: 100%; min-height: 44px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--panel); font-family: var(--font-data); font-size: 16px; }
+.field input:focus { border-color: var(--accent); outline: 3px solid var(--accent-soft); outline-offset: 0; }
+.field input::placeholder { color: var(--ink-3); font-family: var(--font-ui); }
+.field.missing input { border-style: dashed; background: var(--sunk); }
 .note-ok { color: var(--ok); font-size: 13px; margin: 0; }
-.warns { margin: 0; padding: 8px 10px; list-style: none; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 13px; display: grid; gap: 4px; }
+.warns { margin: 0; padding: 8px 12px; list-style: none; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 13px; display: grid; gap: 4px; }
 details > summary { cursor: pointer; font-size: 13px; color: var(--ink-2); min-height: 32px; display: flex; align-items: center; }
 details.others ul { margin: 6px 0 0; padding-left: 18px; font-family: var(--font-data); font-size: 12px; overflow-wrap: anywhere; }
-.card .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.card .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-top: 1px solid var(--line); padding-top: 12px; }
 .card .actions .grow { flex: 1; }
+.empty-list { text-align: center; color: var(--ink-2); padding: 28px 16px; border: 1.5px dashed var(--line-2); border-radius: 14px; background: var(--panel); }
+.empty-list p { margin: 0; }
 
-.empty p { margin: 0 0 8px; }
-.empty ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
-pre.csv { margin: 8px 0 0; padding: 10px; border-radius: 8px; background: var(--ground); border: 1px solid var(--line); font-family: var(--font-data); font-size: 12px; overflow-x: auto; white-space: pre; max-width: 100%; }
+/* bottom action bar */
+.bottombar { position: fixed; z-index: 15; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,0.96); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-top: 1px solid var(--line); padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); }
+.bottombar .in { max-width: 608px; margin-inline: auto; display: flex; align-items: center; gap: 12px; }
+.bottombar .in > span { flex: 1; font-size: 13px; color: var(--ink-2); }
+.bottombar .btn { min-width: 150px; }
 
-.finish { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 4px; }
-.finish span { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
-
-.seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); }
-.seg button { border: 0; background: transparent; padding: 10px; min-height: 44px; text-align: left; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.seg button + button { border-left: 1px solid var(--line); }
-.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+/* export */
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; padding: 4px; gap: 4px; border-radius: 12px; background: #eef1f5; }
+.seg button { border: 0; background: transparent; border-radius: 9px; padding: 8px 10px; min-height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; min-width: 0; color: var(--ink-2); }
+.seg button[aria-pressed="true"] { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); }
 .seg .t { font-weight: 600; font-size: 14px; }
-.seg .c { font-family: var(--font-data); font-size: 11px; opacity: 0.85; }
-#exportPanel { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
-#exportPanel > * { min-width: 0; }
-.opts { display: grid; gap: 12px; }
-.opts label, .settings label { font-size: 13px; color: var(--ink-2); display: grid; gap: 4px; min-width: 0; }
-.opts select, .settings input { min-height: 46px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--ground); font-size: 16px; width: 100%; }
+.seg .c { font-size: 11px; }
+.exp { display: flex; flex-direction: column; gap: 18px; }
+.exp .group { display: grid; gap: 8px; }
+.exp .group > .h { font-size: 13px; font-weight: 600; color: var(--ink); }
+.cols { display: flex; flex-wrap: wrap; gap: 8px; }
+.cols label { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; min-height: 36px; border-radius: 99px; border: 1px solid var(--line-2); font-size: 13px; cursor: pointer; background: var(--panel); }
+.cols label:has(input:checked) { background: var(--accent-soft); border-color: var(--accent-line); color: #0a3f80; }
+.cols input { accent-color: var(--accent); margin: 0; }
+.opts { display: grid; gap: 12px; grid-template-columns: 1fr; }
+@media (min-width: 520px) { .opts { grid-template-columns: 1fr 1fr; } }
+.fname { display: flex; align-items: center; border: 1px solid var(--line-2); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.fname input { flex: 1; min-width: 0; border: 0; min-height: 46px; padding: 0 12px; font-size: 16px; background: transparent; }
+.fname input:focus { outline: none; }
+.fname:focus-within { border-color: var(--accent); outline: 3px solid var(--accent-soft); }
+.fname span { padding: 0 12px; color: var(--ink-2); font-family: var(--font-data); font-size: 14px; background: var(--sunk); align-self: stretch; display: grid; place-items: center; border-left: 1px solid var(--line); }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; max-height: 340px; }
+table.prev { border-collapse: collapse; width: max-content; min-width: 100%; font-size: 13px; }
+table.prev th, table.prev td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+table.prev th { position: sticky; top: 0; background: var(--accent-soft); color: #0a3f80; font-weight: 600; font-size: 12px; }
+table.prev td { font-family: var(--font-data); font-size: 12.5px; }
+table.prev td.na { color: var(--ink-3); font-family: var(--font-ui); }
+table.prev tr:last-child td { border-bottom: 0; }
+.callout { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 13px; }
+.callout.ok { background: var(--ok-soft); color: var(--ok); }
+.expbtns { display: grid; gap: 10px; }
 .settings { display: grid; gap: 12px; margin-top: 10px; }
-.settings input { font-family: var(--font-data); }
+.settings .input { font-family: var(--font-data); }
 @media (prefers-reduced-motion: reduce) { .bar > i, .viewport .flash { transition: none; } }
 </style>
 </head>
 <body>
+<header class="appbar">
+  <div class="in">
+    <button type="button" class="iconbtn" id="btnBack" aria-label="Back" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <div class="brand" id="brand">
+      <span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6v12M9.5 6v12M13 6v12M17.5 6v12"/></svg></span>
+      <h1 id="title">Label Scanner</h1>
+    </div>
+    <span class="pill" id="decoderPill">Loading</span>
+  </div>
+</header>
+
 <main>
-  <header class="top">
-    <h1>Label Scanner</h1>
-    <span class="pill" id="decoderPill">Loading decoder…</span>
-  </header>
-
-  <section class="panel scan" id="scanPanel" aria-label="Scan">
-    <div class="row2">
-      <button type="button" class="btn primary big" id="btnLive">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8v8M10 8v8M13 8v8M16 8v8"/></svg>
-        Live scan
-        <small>Point at the labels</small>
-      </button>
-      <button type="button" class="btn big" id="btnCam">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
-        Take photo
-        <small>One sharp shot</small>
-      </button>
-    </div>
-    <div class="row2">
-      <button type="button" class="btn" id="btnLib">From library</button>
-      <button type="button" class="btn" id="btnManual">Add by hand</button>
-    </div>
-    <p class="hint">Works on Cisco switches and Meraki/Cisco access points. Hold the phone 15 to 25 cm from the label, flat to it, without flash glare. Images are read on this phone and never uploaded or saved.</p>
-    <input type="file" id="inCam" accept="image/*" capture="environment" hidden>
-    <input type="file" id="inLib" accept="image/*" multiple hidden>
-  </section>
-
-  <section class="panel live" id="livePanel" hidden aria-label="Live scan">
-    <div class="livehead">
-      <b id="liveTitle">Live scan</b>
-      <span class="pill" id="liveType">Looking…</span>
-    </div>
-    <div class="viewport">
-      <video id="video" playsinline muted autoplay></video>
-      <div class="guide"></div>
-      <div class="flash" id="flash"></div>
-      <div class="live-msg" id="liveMsg">Starting camera…</div>
-    </div>
-    <div class="camctl" id="camctl">
-      <label id="zoomWrap" hidden>Zoom <input type="range" id="zoom" min="1" max="1" step="0.1" value="1"></label>
-      <button type="button" class="btn small" id="btnTorch" hidden>Light</button>
-    </div>
-    <ul class="found" id="found"></ul>
-    <div class="row3">
-      <button type="button" class="btn primary" id="btnSaveDev" disabled>Save device</button>
-      <button type="button" class="btn" id="btnResetDev">Start over</button>
-      <button type="button" class="btn" id="btnStop">Close camera</button>
-    </div>
-    <p class="hint">Take your time. Codes keep adding up while you move along the label. Nothing is saved until you tap Save device.</p>
-  </section>
-
-  <section id="progress" class="panel" hidden aria-live="polite">
-    <span id="progressText">Reading…</span>
-    <div class="bar"><i id="progressBar"></i></div>
-  </section>
   <p id="status" role="status" aria-live="polite" hidden></p>
 
-  <section aria-label="Devices" style="display:flex;flex-direction:column;gap:10px">
-    <div class="listhead">
-      <h2 id="devHead">Devices</h2>
-      <button type="button" class="btn small danger" id="btnClear" hidden>Clear all</button>
+  <!-- HOME -->
+  <section class="view" id="viewHome" aria-label="Files">
+    <div class="sectionhead"><h2>Scan files</h2><span id="homeCount"></span></div>
+    <ul class="files" id="files"></ul>
+    <div class="panel empty-home" id="homeEmpty">
+      <span class="art"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14h6"/></svg></span>
+      <h2>No scan files yet</h2>
+      <p>Tap the + button to start a file for a site or closet, then choose whether you are scanning access points or other devices.</p>
     </div>
-    <ul id="devices"></ul>
-    <div class="finish" id="finishBar" hidden>
-      <span id="finishCount">0 devices</span>
-      <button type="button" class="btn" id="btnFinish">Finish and export…</button>
-    </div>
-    <div class="panel empty" id="empty">
-      <p><b>No devices yet.</b></p>
-      <ol>
-        <li>Start a live scan and point at one device's labels.</li>
-        <li>When the fields you need are ticked, tap Save device. Move to the next one.</li>
-        <li>When the closet is done, choose Finish and export.</li>
-      </ol>
-    </div>
-  </section>
-
-  <section id="exportPanel" class="panel" hidden aria-label="Export">
-    <h2>Export</h2>
-    <div class="seg" role="group" aria-label="CSV template">
-      <button type="button" id="tplFull" aria-pressed="true"><span class="t">All fields</span><span class="c">10 columns</span></button>
-      <button type="button" id="tplShort" aria-pressed="false"><span class="t">Asset, MAC, serial</span><span class="c">3 columns</span></button>
-    </div>
-    <div class="opts">
-      <label for="macStyle">MAC address format
-        <select id="macStyle">
-          <option value="colons">F4:B8:21:88:DE:00</option>
-          <option value="dashes">F4-B8-21-88-DE-00</option>
-          <option value="plain">F4B82188DE00</option>
-          <option value="cisco">f4b8.2188.de00</option>
-        </select>
-      </label>
-      <label for="apSerial">Serial column for access points (short CSV)
-        <select id="apSerial">
-          <option value="cisco">Cisco S/N (FJC…)</option>
-          <option value="meraki">Meraki serial (Q…)</option>
-        </select>
-      </label>
-    </div>
-    <details id="previewBox" open>
-      <summary>Preview</summary>
-      <pre class="csv" id="csvPreview"></pre>
+    <details class="panel">
+      <summary>Settings</summary>
+      <div class="settings">
+        <label class="lbl" for="assetRe">Asset tag pattern (regular expression)
+          <input class="input" id="assetRe" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" value="^\d{4,9}$">
+        </label>
+        <p class="hint">Images are read on this phone and never uploaded. Files are kept in this browser until you delete them.</p>
+      </div>
     </details>
-    <button type="button" class="btn primary" id="btnShare">Email or share CSV</button>
-    <div class="row2">
-      <button type="button" class="btn" id="btnDownload">Download CSV</button>
-      <button type="button" class="btn" id="btnCopy">Copy CSV</button>
+  </section>
+  <button type="button" class="fab" id="btnNew" aria-label="New scan file">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+
+  <!-- FILE -->
+  <section class="view" id="viewFile" hidden aria-label="Scan file">
+    <div class="panel filehead">
+      <div class="top">
+        <span class="ficon" id="fIcon"></span>
+        <div class="tx">
+          <span class="badge" id="fBadge"></span>
+          <span class="site" id="fSite"></span>
+        </div>
+      </div>
+      <div class="stats">
+        <div><b id="stTotal">0</b><span>Devices</span></div>
+        <div class="ok"><b id="stDone">0</b><span>Complete</span></div>
+        <div class="warn"><b id="stMiss">0</b><span>Missing info</span></div>
+      </div>
     </div>
-    <p class="hint">Email or share opens the iPhone share sheet with the CSV attached. Pick Mail to email it, or Save to Files.</p>
-    <button type="button" class="btn" id="btnBack">Keep scanning</button>
+
+    <div class="scanact" id="scanPanel">
+      <button type="button" class="tile primary" id="btnLive">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8v8M10 8v8M13 8v8M16 8v8"/></svg></span>
+        <b>Live scan</b><small>Point at the labels</small>
+      </button>
+      <button type="button" class="tile" id="btnCam">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></span>
+        <b>Take photo</b><small>Best for small codes</small>
+      </button>
+      <button type="button" class="tile" id="btnLib">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 16l5-5 4 4 3-3 6 6"/><circle cx="15.5" cy="8.5" r="1.5"/></svg></span>
+        <b>From library</b><small>One or more photos</small>
+      </button>
+      <button type="button" class="tile" id="btnManual">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></span>
+        <b>Add by hand</b><small>Type the details</small>
+      </button>
+      <input type="file" id="inCam" accept="image/*" capture="environment" hidden>
+      <input type="file" id="inLib" accept="image/*" multiple hidden>
+    </div>
+
+    <section class="panel live" id="livePanel" hidden aria-label="Live scan">
+      <div class="livehead">
+        <b id="liveTitle">Live scan</b>
+        <span class="badge" id="liveType">Looking…</span>
+      </div>
+      <div class="viewport">
+        <video id="video" playsinline muted autoplay></video>
+        <div class="guide"></div>
+        <div class="flash" id="flash"></div>
+        <div class="live-msg" id="liveMsg">Starting camera…</div>
+      </div>
+      <div class="camctl">
+        <label id="zoomWrap" hidden>Zoom <input type="range" id="zoom" min="1" max="1" step="0.1" value="1"></label>
+        <button type="button" class="btn small" id="btnTorch" hidden>Light</button>
+      </div>
+      <ul class="found" id="found"></ul>
+      <div class="row3">
+        <button type="button" class="btn primary" id="btnSaveDev" disabled>Save device</button>
+        <button type="button" class="btn" id="btnResetDev">Start over</button>
+        <button type="button" class="btn" id="btnStop">Close</button>
+      </div>
+      <p class="hint">Hold the phone 15 to 25 cm from the label, flat to it, without glare. Codes keep adding up while you move along the label. Nothing is saved until you tap Save device.</p>
+    </section>
+
+    <section id="progress" class="panel" hidden aria-live="polite">
+      <span id="progressText">Reading…</span>
+      <div class="bar"><i id="progressBar"></i></div>
+    </section>
+
+    <div class="sectionhead"><h2 id="devHead">Devices</h2><span></span></div>
+    <ul id="devices"></ul>
+    <div class="empty-list" id="devEmpty"><p>No devices in this file yet. Start a live scan and point at the first device's labels.</p></div>
+
+    <details class="panel">
+      <summary>File details</summary>
+      <div class="settings">
+        <label class="lbl" for="fName">File name <input class="input" id="fName" type="text" autocomplete="off"></label>
+        <label class="lbl" for="fSiteIn">Site or location <input class="input" id="fSiteIn" type="text" autocomplete="off" placeholder="Optional"></label>
+        <button type="button" class="btn danger" id="btnDelFile">Delete this file</button>
+      </div>
+    </details>
   </section>
 
-  <details class="panel">
-    <summary>Settings</summary>
-    <div class="settings">
-      <label for="assetRe">Asset tag pattern (regular expression)
-        <input id="assetRe" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" value="^\d{4,9}$">
+  <!-- EXPORT -->
+  <section class="view" id="viewExport" hidden aria-label="Export">
+    <div class="panel exp">
+      <div class="stats">
+        <div><b id="exTotal">0</b><span>Devices</span></div>
+        <div class="ok"><b id="exDone">0</b><span>Complete</span></div>
+        <div class="warn"><b id="exMiss">0</b><span>Missing info</span></div>
+      </div>
+      <p class="callout" id="exCallout" hidden></p>
+
+      <div class="group">
+        <span class="h">File format</span>
+        <div class="seg" role="group" aria-label="File format">
+          <button type="button" data-fmt="xlsx"><span class="t">Excel</span><span class="c">.xlsx</span></button>
+          <button type="button" data-fmt="csv"><span class="t">CSV</span><span class="c">.csv</span></button>
+        </div>
+      </div>
+
+      <div class="group">
+        <span class="h">Columns</span>
+        <div class="seg" role="group" aria-label="Column preset">
+          <button type="button" data-preset="full"><span class="t">All fields</span></button>
+          <button type="button" data-preset="short"><span class="t">Asset, MAC, S/N</span></button>
+          <button type="button" data-preset="custom"><span class="t">Custom</span></button>
+        </div>
+        <div class="cols" id="colPick" hidden></div>
+      </div>
+
+      <div class="opts">
+        <label class="lbl" for="macStyle">MAC address format
+          <select class="select" id="macStyle">
+            <option value="colons">F4:B8:21:88:DE:00</option>
+            <option value="dashes">F4-B8-21-88-DE-00</option>
+            <option value="plain">F4B82188DE00</option>
+            <option value="cisco">f4b8.2188.de00</option>
+          </select>
+        </label>
+        <label class="lbl" for="apSerial" id="apSerialWrap">Serial number for access points
+          <select class="select" id="apSerial">
+            <option value="cisco">Cisco S/N (FJC…)</option>
+            <option value="meraki">Meraki serial (Q…)</option>
+          </select>
+        </label>
+      </div>
+
+      <label class="lbl">File name
+        <span class="fname"><input id="exName" type="text" autocomplete="off" spellcheck="false" aria-label="File name"><span id="exExt">.xlsx</span></span>
       </label>
+
+      <div class="group">
+        <span class="h" id="prevHead">Preview</span>
+        <div class="tablewrap"><table class="prev" id="prevTable"></table></div>
+      </div>
+
+      <div class="expbtns">
+        <button type="button" class="btn primary" id="btnShare">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16v12H4z"/><path d="M4 7l8 6 8-6"/></svg>
+          Email or share
+        </button>
+        <div class="row2">
+          <button type="button" class="btn" id="btnDownload">Download</button>
+          <button type="button" class="btn" id="btnCopy">Copy as table</button>
+        </div>
+        <p class="hint">Email or share opens the iPhone share sheet with the file attached. Pick Mail to email it, or Save to Files. Copy as table pastes straight into Excel, Numbers or Sheets.</p>
+      </div>
     </div>
-  </details>
+  </section>
 </main>
+
+<div class="bottombar" id="bottomBar" hidden>
+  <div class="in">
+    <span id="bbText">0 devices</span>
+    <button type="button" class="btn primary" id="btnExport">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+      Export
+    </button>
+  </div>
+</div>
+
+<dialog class="sheet" id="dlgNew" aria-labelledby="newTitle">
+  <form method="dialog" id="newForm">
+    <div class="grab"></div>
+    <h2 id="newTitle">New scan file</h2>
+    <label class="lbl" for="newName">File name
+      <input class="input" id="newName" type="text" autocomplete="off" required>
+    </label>
+    <label class="lbl" for="newSite">Site or location
+      <input class="input" id="newSite" type="text" autocomplete="off" placeholder="Optional, e.g. Building 2, IDF 3">
+    </label>
+    <div class="lbl" role="radiogroup" aria-label="What are you scanning?">What are you scanning?
+      <div class="choices">
+        <label class="choice"><input type="radio" name="kind" value="AP" checked><span class="ficon AP" data-icon="AP"></span><span class="tx"><span class="t">Access points</span><span class="d">Cisco and Meraki APs: asset tag, MAC, Cisco S/N, Meraki serial, model</span></span><span class="radio"></span></label>
+        <label class="choice"><input type="radio" name="kind" value="Switch"><span class="ficon Switch" data-icon="Switch"></span><span class="tx"><span class="t">Switches</span><span class="d">Cisco switches: asset tag, MAC, serial, model, part number, CLEI</span></span><span class="radio"></span></label>
+        <label class="choice"><input type="radio" name="kind" value="Mixed"><span class="ficon Mixed" data-icon="Mixed"></span><span class="tx"><span class="t">Different devices</span><span class="d">A mix of APs, switches and other gear. Type is detected per device.</span></span><span class="radio"></span></label>
+      </div>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn" id="btnNewCancel">Cancel</button>
+      <button type="submit" class="btn primary">Create file</button>
+    </div>
+  </form>
+</dialog>
 
 <script src="vendor/zxing-reader.js"></script>
 <script src="core.js"></script>
+<script src="xlsx.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
