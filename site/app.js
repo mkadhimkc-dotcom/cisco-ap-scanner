@@ -10,6 +10,7 @@ import { Xlsx } from './src/xlsx.js';
 import { Store } from './src/store.js';
 import { COLUMNS, COLUMN_KEYS, BUILTIN, allTemplates, findTemplate, newTemplate, cleanTemplate, buildTable, fileJson, exportFileName } from './src/templates.js';
 import { tableToCsv } from './src/csv.js';
+import { ZXING_WASM_VERSION } from './src/decoder.js';
 
 const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_LABEL, TYPES, EXPECTED, DEFAULT_ASSET_RE, buildDevice, mergeDevice, csvCell };
 
@@ -35,7 +36,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   var CHEV = '<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
 
   var state = {
-    files: [], assetRe: Core.DEFAULT_ASSET_RE, autoSave: false,
+    files: [], assetRe: Core.DEFAULT_ASSET_RE, autoSave: false, theme: 'light', installTipDismissed: false,
     exp: { format: 'csv', template: 'full', macStyle: 'colons', apSerial: 'cisco' },
     templates: [], shareNoted: false
   };
@@ -48,6 +49,8 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       if (Array.isArray(s.files)) state.files = s.files;
       if (typeof s.assetRe === 'string') state.assetRe = s.assetRe;
       if (typeof s.autoSave === 'boolean') state.autoSave = s.autoSave;
+      if (['light', 'dark', 'system'].indexOf(s.theme) >= 0) state.theme = s.theme;
+      state.installTipDismissed = !!s.installTipDismissed;
       if (typeof s.zoom === 'number') state.zoom = s.zoom;
       if (s.exp && typeof s.exp === 'object') Object.assign(state.exp, s.exp);
       if (Array.isArray(s.templates)) state.templates = s.templates.map(cleanTemplate);
@@ -133,7 +136,10 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     state.files.push(f);
     return f;
   }
-  function touch(f) { f.updated = stamp(new Date()); }
+  function touch(f) { f.updated = stamp(new Date()); f.changedAt = Date.now(); }
+  /* Data changed since the last export (or never exported): shown on the home list as a nudge. */
+  function needsExport(f) { return f.rows.length > 0 && (!f.exportedAt || (f.changedAt || 0) > f.exportedAt); }
+  function markExported(f) { f.exportedAt = Date.now(); save(); }
 
   /* ---------- decoder ---------- */
   async function initScanner() {
@@ -216,7 +222,8 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       setStatus('This browser cannot open the camera here. Open the app from its https:// address in Safari, or use Take photo.', 'bad');
       return;
     }
-    live.target = tid || null; live.codes = new Map(); live.frames = 0; live.justSaved = null; live.boxes = []; live.steady = true;
+    live.target = tid || null; live.codes = new Map(); live.frames = 0; live.justSaved = null; live.boxes = []; live.steady = true; live.announced = {};
+    $('standaloneHint').hidden = !isStandaloneIos();
     scanner.reset();
     $('liveTitle').textContent = live.mode === 'asset' ? 'Asset tag for #' + num(f, findRow(f, live.target)) : live.target ? 'Adding to device #' + num(f, findRow(f, live.target)) : 'Live scan';
     $('livePanel').classList.toggle('asset-mode', live.mode === 'asset');
@@ -311,6 +318,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       if (h) h.count += 1; else { live.codes.set(key, { format: c.format, text: c.text, count: 1 }); fresh = true; }
     });
     if (fresh) flash();
+    announceFields();
     if (live.mode === 'asset') finishAssetTag();
     else maybeAutoSave();
   }
@@ -337,6 +345,17 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     try { if (navigator.vibrate) navigator.vibrate([30, 60, 30]); } catch (e) {}
   }
 
+  /* Screen readers hear each field once when it is first read and once when it is confirmed. */
+  function announceFields() {
+    var dev = liveDevice(), said = live.announced || (live.announced = {}), out = [];
+    Core.FIELD_ORDER.forEach(function (k) {
+      if (!dev[k]) return;
+      var st = confirmedField(dev, k) ? 'confirmed' : 'read';
+      if (said[k] === st || (said[k] === 'confirmed')) return;
+      said[k] = st; out.push(LABEL[k] + ' ' + st);
+    });
+    if (out.length) $('announce').textContent = out.join('. ') + '.';
+  }
   function setReading(on) {
     live.reading = on;
     var el = $('liveState');
@@ -446,7 +465,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       n: num(f, row), started: false,
       vals: new Set(DUP_FIELDS.map(function (k) { return dupKey(k, row[k]); }).filter(Boolean))
     } : null;
-    live.codes = new Map(); live.frames = 0; live.boxes = [];
+    live.codes = new Map(); live.frames = 0; live.boxes = []; live.announced = {};
     scanner.reset();
     if (tid) stopLive(); else renderLive();
   }
@@ -499,9 +518,12 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     document.querySelectorAll('[data-act="live"],[data-act="photo"]').forEach(function (x) { x.disabled = off; });
   }
 
+  /* Photos picked while another is still being read wait their turn instead of being dropped. */
+  var pending = [];
   async function handleFiles(files, tid) {
     var f = cur();
-    if (!f || !files || !files.length || !scanner || busy) return;
+    if (!f || !files || !files.length || !scanner) return;
+    if (busy) { if (tid !== 'live') pending.push({ files: files, tid: tid, fid: f.id }); return; }
     if (tid === 'live') return addPhotoToLive(files[0]);
     setBusy(true); setStatus('');
     var lastRow = null, added = 0, empty = 0, failed = 0;
@@ -524,6 +546,8 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     } else if (failed) setStatus('Could not open that photo. Try again, or pick a JPEG.', 'bad');
     else if (empty) setStatus('No barcodes found. Move closer, keep the labels flat to the camera, and avoid glare.', 'warn');
     setBusy(false); targetId = null;
+    var next = pending.shift();
+    if (next && cur() && cur().id === next.fid) handleFiles(next.files, next.tid); else pending = [];
   }
 
   /* ---------- routing ---------- */
@@ -573,7 +597,8 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
       var sub = KIND[f.kind].label + (f.location ? ' · ' + f.location : '') + (f.rack ? ' · ' + f.rack : '') + ' · ' + niceDate(f.updated);
       return '<li class="fileitem"><a class="file" href="#/f/' + encodeURIComponent(f.id) + '">' +
         '<span class="ficon ' + f.kind + '">' + ICON[f.kind] + '</span>' +
-        '<span class="meta"><span class="name">' + esc(f.name) + '</span><span class="sub">' + esc(sub) + '</span></span>' +
+        '<span class="meta"><span class="name">' + esc(f.name) + '</span><span class="sub">' + esc(sub) + '</span>' +
+        (needsExport(f) ? '<span class="notexp">Not exported yet</span>' : '') + '</span>' +
         '<span class="count"><b>' + c.total + '</b><small>' + (c.total === 1 ? 'device' : 'devices') + '</small></span>' + CHEV + '</a>' +
         '<button type="button" class="fdel" data-del="' + esc(f.id) + '" aria-label="Delete ' + esc(f.name) + '">' + TRASH + '</button></li>';
     }).join('');
@@ -768,6 +793,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     var file = buildFile(f), url = URL.createObjectURL(file);
     var a = document.createElement('a'); a.href = url; a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+    markExported(f);
     setStatus('Downloaded ' + file.name + '.');
     return file.name;
   }
@@ -777,6 +803,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({ files: [file], title: file.name, text: f.name + (f.location ? ' (' + f.location + ')' : '') + ': ' + plural(f.rows.length, 'device') + ', exported ' + stamp(new Date()) + '.' });
+        markExported(f);
         setStatus('Shared ' + file.name + '.');
       } catch (e) { if (!e || e.name !== 'AbortError') setStatus('Sharing failed (' + (e && e.message || 'error') + '). Use Download instead.', 'warn'); }
     } else {
@@ -790,7 +817,7 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   async function copyTable() {
     var f = cur(); if (!f) return;
     var text = state.exp.format === 'json' ? jsonText(f) : toTsv(exportTable(f));
-    try { await navigator.clipboard.writeText(text); setStatus(state.exp.format === 'json' ? 'JSON copied.' : 'Copied. Paste into Excel, Numbers, Sheets or an email.'); }
+    try { await navigator.clipboard.writeText(text); markExported(f); setStatus(state.exp.format === 'json' ? 'JSON copied.' : 'Copied. Paste into Excel, Numbers, Sheets or an email.'); }
     catch (e) { setStatus('Copy is blocked in this browser. Use Download or Email instead.', 'warn'); }
   }
 
@@ -1071,14 +1098,48 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
   $('btnDelAll').addEventListener('click', function (e) {
     twoStep(e.target, 'delall', 'Delete all data', async function () {
       var n = state.files.length;
-      state.files = []; state.assetRe = Core.DEFAULT_ASSET_RE; state.autoSave = false; delete state.zoom;
+      state.files = []; state.assetRe = Core.DEFAULT_ASSET_RE; state.autoSave = false; delete state.zoom; state.theme = 'light'; state.installTipDismissed = false;
       state.exp = { format: 'csv', template: 'full', macStyle: 'colons', apSerial: 'cisco' }; state.templates = []; state.shareNoted = false;
       clearUndo();
       await store.clear();
-      $('assetRe').value = state.assetRe; $('autoSave').checked = false;
+      $('assetRe').value = state.assetRe; $('autoSave').checked = false; $('theme').value = 'light'; applyTheme();
       renderHome(); setStatus('All data deleted from this phone (' + plural(n, 'file') + ' and settings).');
     });
   });
+
+  /* ---------- theme ---------- */
+  function applyTheme() {
+    document.documentElement.dataset.theme = state.theme;
+    var bg = getComputedStyle(document.documentElement).getPropertyValue('--panel').trim();
+    if (bg) $('themeColor').setAttribute('content', bg);
+  }
+  $('theme').addEventListener('change', function (e) { state.theme = e.target.value; save(); applyTheme(); });
+  if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () { if (state.theme === 'system') applyTheme(); });
+
+  /* ---------- tips, iPhone notes ---------- */
+  function openTips() { var d = $('dlgTips'); if (d.showModal) d.showModal(); else d.setAttribute('open', ''); }
+  $('btnTips').addEventListener('click', openTips);
+  $('btnTipsHome').addEventListener('click', openTips);
+  function isIos() { return /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+  function isStandaloneIos() { return isIos() && (navigator.standalone === true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)); }
+  function renderInstallTip() { $('installTip').hidden = state.installTipDismissed || !isIos() || isStandaloneIos(); }
+  $('btnInstallTipClose').addEventListener('click', function () { state.installTipDismissed = true; save(); renderInstallTip(); });
+
+  /* ---------- offline: service worker, "Update ready, reload" ---------- */
+  function registerSw() {
+    if (!('serviceWorker' in navigator)) return;
+    var reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function () { if (!reloading) { reloading = true; location.reload(); } });
+    navigator.serviceWorker.register('sw.js').then(function (reg) {
+      function offer(w) { if (!w || !navigator.serviceWorker.controller) return; $('updateBar').hidden = false; $('btnUpdate').onclick = function () { w.postMessage('skipWaiting'); }; }
+      if (reg.waiting) offer(reg.waiting);
+      reg.addEventListener('updatefound', function () {
+        var w = reg.installing; if (!w) return;
+        w.addEventListener('statechange', function () { if (w.state === 'installed') offer(w); });
+      });
+      document.addEventListener('visibilitychange', function () { if (!document.hidden) reg.update().catch(function () {}); });
+    }).catch(function () { /* no offline support in this browser */ });
+  }
 
   window.addEventListener('hashchange', onRoute);
 
@@ -1091,6 +1152,9 @@ const Core = { scanImage, classify, normalizeMac, formatMac, FIELD_ORDER, FIELD_
     await load();
     $('assetRe').value = state.assetRe;
     $('autoSave').checked = state.autoSave;
+    $('theme').value = state.theme; applyTheme(); renderInstallTip();
+    $('footer').textContent = 'Label Scanner ' + APP_VERSION + ' · zxing-wasm ' + ZXING_WASM_VERSION + ' · works offline once loaded';
+    registerSw();
     $('storageNote').textContent = kind === 'indexeddb' ? 'Saved on this phone in the browser database (IndexedDB).' :
       kind === 'localstorage' ? 'This browser has no IndexedDB here, so files are kept in its smaller local storage.' : 'This browser cannot store files here; export before closing.';
     onRoute();
