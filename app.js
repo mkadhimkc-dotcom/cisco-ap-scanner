@@ -4,7 +4,7 @@
   var $ = function (id) { return document.getElementById(id); };
   var Core = window.Core;
   var LABEL = Object.assign({ note: 'Note' }, Core.FIELD_LABEL);
-  var STORE = 'labelscanner.v3', OLD_STORE = 'labelscanner.v2';
+  var STORE = 'labelscanner.v3';
 
   var KIND = {
     AP: { label: 'Access points', one: 'AP' },
@@ -16,6 +16,7 @@
     Switch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="7" width="19" height="10" rx="2"/><path d="M6 11h1M9 11h1M12 11h1M15 11h1M6 14h1M9 14h1M12 14h1M15 14h1"/></svg>',
     Mixed: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></svg>'
   };
+  var TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
   var CHEV = '<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
 
   /* export columns, in output order */
@@ -41,17 +42,6 @@
         if (s.exp && typeof s.exp === 'object') Object.assign(state.exp, s.exp);
         return;
       }
-      var old = JSON.parse(localStorage.getItem(OLD_STORE) || 'null');
-      if (old && typeof old === 'object') {
-        if (typeof old.assetRe === 'string') state.assetRe = old.assetRe;
-        ['macStyle', 'apSerial'].forEach(function (k) { if (typeof old[k] === 'string') state.exp[k] = old[k]; });
-        if (old.template === 'short') state.exp.preset = 'short';
-        if (Array.isArray(old.rows) && old.rows.length) {
-          var f = newFile('Earlier scans', '', 'Mixed');
-          f.rows = old.rows; f.seq = old.seq || old.rows.length;
-        }
-        save();
-      }
     } catch (e) {}
   }
   function save() { invalidateDups(); try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {} }
@@ -74,6 +64,8 @@
   function nextFrame() { return new Promise(function (r) { requestAnimationFrame(function () { r(); }); }); }
   function expectedFor(type) { return Core.EXPECTED[type] || Core.EXPECTED.Other; }
   function cur() { return route.id ? state.files.find(function (f) { return f.id === route.id; }) : null; }
+  /* device number = position in its own file, so every file starts at #1 */
+  function num(f, row) { return f.rows.indexOf(row) + 1; }
   function findRow(f, id) { return f && f.rows.find(function (r) { return r.id === id; }); }
   function missingOf(row) { return expectedFor(row.type).filter(function (f) { return !row[f]; }); }
   function counts(f) {
@@ -81,29 +73,27 @@
     return { total: f.rows.length, done: done, miss: f.rows.length - done, dup: f.rows.filter(function (r) { return dupsOf(f, r).length; }).length };
   }
 
-  /* ---------- duplicates (across every file) ---------- */
+  /* ---------- duplicates (within one file; each file is its own data set) ---------- */
   var DUP_FIELDS = ['assetTag', 'mac', 'serial', 'meraki'];
   function dupKey(k, v) {
     v = String(v == null ? '' : v).trim();
     if (!v) return '';
     return k + '|' + (k === 'mac' ? (Core.normalizeMac(v) || v.toUpperCase()) : v.toUpperCase());
   }
-  var dupCache = null;
-  function dupIndex() {
-    if (dupCache) return dupCache;
+  var dupCache = {};
+  function dupIndex(f) {
+    if (dupCache[f.id]) return dupCache[f.id];
     var idx = {};
-    state.files.forEach(function (f) {
-      f.rows.forEach(function (r) {
-        DUP_FIELDS.forEach(function (k) { var key = dupKey(k, r[k]); if (key) (idx[key] = idx[key] || []).push({ f: f, r: r }); });
-      });
+    f.rows.forEach(function (r) {
+      DUP_FIELDS.forEach(function (k) { var key = dupKey(k, r[k]); if (key) (idx[key] = idx[key] || []).push({ f: f, r: r }); });
     });
-    return (dupCache = idx);
+    return (dupCache[f.id] = idx);
   }
-  function invalidateDups() { dupCache = null; }
-  function where(f, o) { return o.f === f ? '#' + o.r.n : '\u201c' + o.f.name + '\u201d #' + o.r.n; }
+  function invalidateDups() { dupCache = {}; }
+  function where(f, o) { return '#' + num(f, o.r); }
   /* -> [{k, where: ['#3', '"Other file" #2']}] for each field of row that another device also has */
   function dupsOf(f, row, values) {
-    var idx = dupIndex(), out = [];
+    var idx = dupIndex(f), out = [];
     DUP_FIELDS.forEach(function (k) {
       var key = dupKey(k, (values || row)[k]); if (!key) return;
       var others = (idx[key] || []).filter(function (o) { return o.r !== row; });
@@ -152,7 +142,7 @@
   function newRow(f, dev) {
     f.seq += 1;
     return {
-      id: 'd' + Date.now().toString(36) + f.seq, n: f.seq, type: dev.type || 'Other',
+      id: 'd' + Date.now().toString(36) + f.seq, type: dev.type || 'Other',
       assetTag: dev.assetTag || '', mac: dev.mac || '', serial: dev.serial || '', meraki: dev.meraki || '', pid: dev.pid || '', partNo: dev.partNo || '', clei: dev.clei || '',
       note: '', scannedAt: stamp(new Date()), warnings: dev.warnings || [], other: dev.other || [], serialAgrees: !!dev.serialAgrees,
       scanned: {}, edited: {}
@@ -171,9 +161,9 @@
     touch(f);
     return row;
   }
-  function summary(row) {
+  function summary(f, row) {
     var exp = expectedFor(row.type), missing = missingOf(row).map(function (k) { return Core.FIELD_LABEL[k]; });
-    return { text: row.type + ' #' + row.n + ': ' + (exp.length - missing.length) + ' of ' + exp.length + ' fields' + (missing.length ? '. Missing: ' + missing.join(', ') + '.' : '.'), kind: missing.length ? 'warn' : '' };
+    return { text: row.type + ' #' + num(f, row) + ': ' + (exp.length - missing.length) + ' of ' + exp.length + ' fields' + (missing.length ? '. Missing: ' + missing.join(', ') + '.' : '.'), kind: missing.length ? 'warn' : '' };
   }
 
   /* ---------- live camera ---------- */
@@ -187,7 +177,7 @@
       return;
     }
     live.target = tid || null; live.codes = new Map(); live.frames = 0;
-    $('liveTitle').textContent = live.target ? 'Adding to device #' + (findRow(f, live.target) || {}).n : 'Live scan';
+    $('liveTitle').textContent = live.target ? 'Adding to device #' + num(f, findRow(f, live.target)) : 'Live scan';
     $('scanPanel').hidden = true; $('livePanel').hidden = false; $('bottomBar').hidden = true;
     $('liveMsg').textContent = 'Starting camera…'; setStatus('');
     renderLive();
@@ -295,7 +285,7 @@
     var row = ingest(f, codes, tid);
     save(); renderFile();
     if (row) {
-      var s = summary(row), d = dupsOf(f, row);
+      var s = summary(f, row), d = dupsOf(f, row);
       if (d.length) setStatus('Saved, but this is a duplicate: ' + dupText(d) + '.', 'bad');
       else setStatus('Saved. ' + s.text + (tid ? '' : ' Point at the next device.'), s.kind);
     }
@@ -361,7 +351,7 @@
     }
     hideProgress(); save(); renderFile();
     if (lastRow) {
-      var s = summary(lastRow);
+      var s = summary(f, lastRow);
       setStatus((added > 1 ? plural(added, 'device') + ' added. Last: ' : '') + s.text + (s.kind ? ' Scan again from a bit closer, or type it in.' : ''), s.kind);
       var el = document.querySelector('li[data-row="' + lastRow.id + '"]'); if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     } else if (failed) setStatus('Could not open that photo. Try again, or pick a JPEG.', 'bad');
@@ -410,13 +400,15 @@
     var list = state.files.slice().sort(function (a, b) { return a.updated < b.updated ? 1 : a.updated > b.updated ? -1 : 0; });
     $('homeEmpty').hidden = list.length > 0;
     $('homeCount').textContent = list.length ? plural(list.length, 'file') : '';
+    $('btnDelAll').hidden = !list.length;
     $('files').innerHTML = list.map(function (f) {
       var c = counts(f);
       var sub = KIND[f.kind].label + (f.site ? ' · ' + f.site : '') + ' · ' + niceDate(f.updated);
-      return '<li><a class="file" href="#/f/' + encodeURIComponent(f.id) + '">' +
+      return '<li class="fileitem"><a class="file" href="#/f/' + encodeURIComponent(f.id) + '">' +
         '<span class="ficon ' + f.kind + '">' + ICON[f.kind] + '</span>' +
         '<span class="meta"><span class="name">' + esc(f.name) + '</span><span class="sub">' + esc(sub) + '</span></span>' +
-        '<span class="count"><b>' + c.total + '</b><small>' + (c.total === 1 ? 'device' : 'devices') + '</small></span>' + CHEV + '</a></li>';
+        '<span class="count"><b>' + c.total + '</b><small>' + (c.total === 1 ? 'device' : 'devices') + '</small></span>' + CHEV + '</a>' +
+        '<button type="button" class="fdel" data-del="' + esc(f.id) + '" aria-label="Delete ' + esc(f.name) + '">' + TRASH + '</button></li>';
     }).join('');
   }
 
@@ -432,7 +424,7 @@
   function cardHtml(f, row) {
     var exp = expectedFor(row.type), miss = missingOf(row);
     var extra = Core.FIELD_ORDER.filter(function (k) { return exp.indexOf(k) < 0; });
-    var h = '<li class="card" data-row="' + row.id + '"><header><span class="num">' + row.n + '</span>' +
+    var h = '<li class="card" data-row="' + row.id + '"><header><span class="num">' + num(f, row) + '</span>' +
       '<span class="ttl"><span class="model' + (row.pid ? '' : ' none') + '">' + esc(row.pid || 'Model not read') + '</span><span class="when">' + esc(row.type === 'Other' ? 'Device' : row.type) + ' · ' + esc(niceDate(row.scannedAt)) + '</span></span>' +
       (f.kind === 'Mixed' ? '<select class="typesel" data-row="' + row.id + '" data-field="type" aria-label="Device type">' +
         Core.TYPES.map(function (t) { return '<option' + (t === row.type ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>' : '') +
@@ -496,7 +488,7 @@
   function exportTable(f) {
     var cols = presetCols(f, state.exp.preset), o = state.exp;
     var merakiSub = o.apSerial === 'meraki' && cols.indexOf('meraki') < 0;
-    var sorted = f.rows.slice().sort(function (a, b) { return a.n - b.n; }), dupRows = [];
+    var sorted = f.rows, dupRows = [];
     var rows = sorted.map(function (r, i) {
       var d = dupsOf(f, r);
       if (d.length) dupRows.push(i);
@@ -542,14 +534,14 @@
     var dupList = f.rows.filter(function (r) { return dupsOf(f, r).length; });
     $('exDupCallout').hidden = !dupList.length;
     $('exDupCallout').textContent = dupList.length ? plural(dupList.length, 'device') + ' look like duplicates: ' +
-      dupList.slice(0, 4).map(function (r) { return '#' + r.n + ' (' + dupText(dupsOf(f, r)) + ')'; }).join('; ') + (dupList.length > 4 ? '; and ' + (dupList.length - 4) + ' more' : '') +
+      dupList.slice(0, 4).map(function (r) { return '#' + num(f, r) + ' (' + dupText(dupsOf(f, r)) + ')'; }).join('; ') + (dupList.length > 4 ? '; and ' + (dupList.length - 4) + ' more' : '') +
       '. They are highlighted in the preview and in the Excel file.' : '';
     var bad = f.rows.filter(function (r) { return missingOf(r).length; });
     var co = $('exCallout');
     co.hidden = !c.total;
     co.className = 'callout' + (bad.length ? '' : ' ok');
     co.textContent = bad.length ?
-      plural(bad.length, 'device') + ' missing information: ' + bad.slice(0, 4).map(function (r) { return '#' + r.n + ' (' + missingOf(r).map(function (k) { return Core.FIELD_LABEL[k]; }).join(', ') + ')'; }).join('; ') + (bad.length > 4 ? '; and ' + (bad.length - 4) + ' more.' : '.') + ' You can still export.' :
+      plural(bad.length, 'device') + ' missing information: ' + bad.slice(0, 4).map(function (r) { return '#' + num(f, r) + ' (' + missingOf(r).map(function (k) { return Core.FIELD_LABEL[k]; }).join(', ') + ')'; }).join('; ') + (bad.length > 4 ? '; and ' + (bad.length - 4) + ' more.' : '.') + ' You can still export.' :
       'All ' + plural(c.total, 'device') + ' have every expected field.';
     document.querySelectorAll('[data-fmt]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.fmt === o.format)); });
     document.querySelectorAll('[data-preset]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.preset === o.preset)); });
@@ -726,6 +718,25 @@
     if (b.dataset.act === 'live') startLive(id);
     if (b.dataset.act === 'photo') { targetId = id; $('inCam').click(); }
     if (b.dataset.act === 'del') twoStep(b, 'del' + id, 'Delete', function () { f.rows = f.rows.filter(function (r) { return r.id !== id; }); touch(f); save(); renderFile(); });
+  });
+
+  function deleteFile(id) {
+    var f = state.files.find(function (x) { return x.id === id; }); if (!f) return;
+    state.files = state.files.filter(function (x) { return x.id !== id; }); save();
+    renderHome(); setStatus('Deleted \u201c' + f.name + '\u201d.');
+  }
+  $('files').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-del]'); if (!b) return;
+    e.preventDefault();
+    if (b.classList.contains('armed')) { deleteFile(b.dataset.del); return; }
+    document.querySelectorAll('#files .fdel.armed').forEach(function (x) { x.classList.remove('armed'); x.innerHTML = TRASH; });
+    b.classList.add('armed'); b.textContent = 'Delete';
+    setTimeout(function () { if (b.isConnected && b.classList.contains('armed')) { b.classList.remove('armed'); b.innerHTML = TRASH; } }, 3000);
+  });
+  $('btnDelAll').addEventListener('click', function (e) {
+    twoStep(e.target, 'delall', 'Delete all files', function () {
+      var n = state.files.length; state.files = []; save(); renderHome(); setStatus(plural(n, 'file') + ' deleted.');
+    });
   });
 
   window.addEventListener('hashchange', onRoute);
